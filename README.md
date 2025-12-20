@@ -1,1 +1,1 @@
-This Project ist work in progress!
+This project is work in progress!
