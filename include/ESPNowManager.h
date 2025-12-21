@@ -2,6 +2,7 @@
  * ESPNowManager.h
  * 
  * Universelle ESP-NOW Kommunikationsklasse mit TLV-Protokoll
+ * OHNE Worker-Thread - direkte Verarbeitung im Main-Thread
  * 
  * Protokoll-Format:
  * [MAIN_CMD 1B] [TOTAL_LEN 1B] [SUB_CMD 1B] [LEN 1B] [DATA...] [SUB_CMD] [LEN] [DATA] ...
@@ -13,6 +14,7 @@
  * - Bidirektionale Kommunikation
  * - Heartbeat mit Timeout-Erkennung
  * - Callbacks + UI-Event-Integration
+ * - KEINE Worker-Threads (ESP-NOW ist bereits async!)
  */
 
 #ifndef ESP_NOW_MANAGER_H
@@ -23,7 +25,6 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include <functional>
@@ -39,7 +40,7 @@
 // KONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Queue-Größen, Worker-Task Parameter und Packet-Größen sind in setupConf.h definiert
+// Queue-Größen und Packet-Größen sind in setupConf.h definiert
 
 // ═══════════════════════════════════════════════════════════════════════════
 // COMMAND ENUMS
@@ -116,59 +117,16 @@ class ESPNowManager;
 class ESPNowPacket;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// QUEUE STRUKTUREN (für Thread-Kommunikation)
+// QUEUE STRUKTUREN
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Empfangenes Paket für Queue (WiFi-Callback → Worker)
+ * Empfangenes Paket für Queue (WiFi-ISR → Main-Thread)
  */
 struct RxQueueItem {
     uint8_t mac[6];
     uint8_t data[ESPNOW_MAX_PACKET_SIZE];
     size_t length;
-    unsigned long timestamp;
-};
-
-/**
- * Zu sendendes Paket für Queue (Main → Worker → WiFi)
- */
-struct TxQueueItem {
-    uint8_t mac[6];
-    uint8_t data[ESPNOW_MAX_PACKET_SIZE];
-    size_t length;
-    bool broadcast;
-};
-
-/**
- * Verarbeitetes Ergebnis für Main-Thread (Worker → Main)
- */
-struct ResultQueueItem {
-    uint8_t mac[6];                         // Absender-MAC
-    MainCmd mainCmd;                        // Haupt-Command
-    
-    // Geparste Daten (direkt verwendbar)
-    struct {
-        int16_t joystickX;
-        int16_t joystickY;
-        uint8_t joystickBtn;
-        bool hasJoystick;
-        
-        int16_t motorLeft;
-        int16_t motorRight;
-        bool hasMotor;
-        
-        uint16_t batteryVoltage;
-        uint8_t batteryPercent;
-        bool hasBattery;
-        
-        uint8_t buttonState;
-        bool hasButtons;
-        
-        // Raw-Daten für custom Commands
-        uint8_t rawData[64];
-        size_t rawDataLen;
-    } data;
-    
     unsigned long timestamp;
 };
 
@@ -518,20 +476,20 @@ public:
     bool isPeerConnected(const uint8_t* mac);
 
     // ═══════════════════════════════════════════════════════════════════════
-    // DATEN SENDEN (Thread-safe, via Queue)
+    // DATEN SENDEN (direkt, esp_now_send ist bereits async!)
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
-     * Paket an Peer senden (async via Queue)
+     * Paket an Peer senden
      * @param mac Ziel-MAC (nullptr = Broadcast)
      * @param packet Zu sendendes Paket
-     * @return true wenn in Queue eingereiht
+     * @return true bei Erfolg
      */
     bool send(const uint8_t* mac, const ESPNowPacket& packet);
 
     /**
      * Paket an alle Peers senden
-     * @return true wenn in Queue eingereiht
+     * @return true bei Erfolg
      */
     bool broadcast(const ESPNowPacket& packet);
 
@@ -539,30 +497,6 @@ public:
      * Heartbeat manuell senden
      */
     void sendHeartbeat();
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // DATEN EMPFANGEN (Thread-safe, via Queue)
-    // ═══════════════════════════════════════════════════════════════════════
-
-    /**
-     * Prüfen ob verarbeitete Daten verfügbar sind
-     * @return true wenn Daten in Result-Queue
-     */
-    bool hasData();
-
-    /**
-     * Verarbeitete Daten abrufen (non-blocking)
-     * @param result Pointer auf Result-Struktur
-     * @return true wenn Daten abgerufen
-     */
-    bool getData(ResultQueueItem* result);
-
-    /**
-     * Alle verfügbaren Daten abrufen und Callback aufrufen
-     * @param callback Funktion für jedes Result
-     * @return Anzahl verarbeiteter Items
-     */
-    int processAllData(std::function<void(const ResultQueueItem&)> callback);
 
     // ═══════════════════════════════════════════════════════════════════════
     // HEARTBEAT
@@ -584,11 +518,11 @@ public:
     void setMaxPeers(uint8_t maxPeers);
 
     // ═══════════════════════════════════════════════════════════════════════
-    // CALLBACKS (Optional, zusätzlich zu Queue)
+    // CALLBACKS
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
-     * Empfangs-Callback setzen (wird im Worker-Thread aufgerufen!)
+     * Empfangs-Callback setzen
      */
     void setReceiveCallback(ESPNowReceiveCallback callback);
 
@@ -598,7 +532,7 @@ public:
     void setSendCallback(ESPNowSendCallback callback);
 
     /**
-     * Event-Callback setzen (UI-Integration, im Main-Thread via update())
+     * Event-Callback setzen (UI-Integration)
      */
     void onEvent(ESPNowEvent event, ESPNowEventCallback callback);
 
@@ -613,7 +547,7 @@ public:
 
     /**
      * Update-Schleife (in loop() aufrufen!)
-     * - Verarbeitet Result-Queue
+     * - Verarbeitet RX-Queue
      * - Triggert Events im Main-Thread
      * - Prüft Heartbeat/Timeouts
      */
@@ -647,7 +581,7 @@ public:
     /**
      * Queue-Statistiken abrufen
      */
-    void getQueueStats(int* rxPending, int* txPending, int* resultPending);
+    int getQueuePending();
 
 private:
     // Status
@@ -665,14 +599,8 @@ private:
     uint32_t timeoutMs;
     unsigned long lastHeartbeatSent;
 
-    // FreeRTOS Queues
-    QueueHandle_t rxQueue;          // WiFi-Callback → Worker
-    QueueHandle_t txQueue;          // Main → Worker → WiFi
-    QueueHandle_t resultQueue;      // Worker → Main
-
-    // Worker Task
-    TaskHandle_t workerTaskHandle;
-    volatile bool workerRunning;
+    // FreeRTOS Queue (nur RX)
+    QueueHandle_t rxQueue;          // WiFi-ISR → Main-Thread
 
     // Callbacks
     ESPNowReceiveCallback receiveCallback;
@@ -683,20 +611,13 @@ private:
     static void onDataRecvStatic(const esp_now_recv_info_t* info, const uint8_t* data, int len);
     static void onDataSentStatic(const wifi_tx_info_t* tx_info, esp_now_send_status_t status);
 
-    // Worker Task
-    static void workerTask(void* parameter);
-    void processRxQueue();
-    void processTxQueue();
-
     // Interne Methoden
+    void processRxQueue();
     void handleSendStatus(const uint8_t* mac, bool success);
     void checkTimeouts();
     void triggerEvent(ESPNowEvent event, ESPNowEventData* data);
     int findPeerIndex(const uint8_t* mac);
     bool compareMac(const uint8_t* mac1, const uint8_t* mac2);
-    
-    // Paket zu Result konvertieren (im Worker-Thread)
-    void packetToResult(const uint8_t* mac, ESPNowPacket& packet, ResultQueueItem& result);
 };
 
 #endif // ESP_NOW_MANAGER_H

@@ -412,7 +412,7 @@ void SerialCommandHandler::handleBattery() {
 }
 
 void SerialCommandHandler::handleESPNow() {
-    if (!espNow) {
+     if (!espNow) {
         Serial.println("❌ ESPNowManager nicht verfügbar");
         return;
     }
@@ -422,13 +422,10 @@ void SerialCommandHandler::handleESPNow() {
     Serial.printf("Own MAC:       %s\n", espNow->getOwnMacString().c_str());
     Serial.printf("Connected:     %s\n", espNow->isConnected() ? "JA" : "NEIN");
     
-    int rxPending, txPending, resultPending;
-    espNow->getQueueStats(&rxPending, &txPending, &resultPending);
+    int rxPending = espNow->getQueuePending();
     
     Serial.println();
     Serial.printf("RX Queue:      %d\n", rxPending);
-    Serial.printf("TX Queue:      %d\n", txPending);
-    Serial.printf("Result Queue:  %d\n", resultPending);
     
     printSeparator();
 }

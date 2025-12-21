@@ -20,6 +20,7 @@ class SerialCommandHandler;
 class PowerManager;
 class ESPNowManager;
 class BatteryMonitor;
+class ESPNowPacket;
 
 enum class MainCmd : uint8_t;
 struct ResultQueueItem;
@@ -71,7 +72,7 @@ void setErrorLED(bool state);
 void blinkStatusLED(int times = 3);
 
 // ESP-NOW Callbacks
-void onESPNowDataReceived(const uint8_t* mac, MainCmd cmd, const ResultQueueItem& result);
+void onESPNowDataReceived(const uint8_t* mac, MainCmd cmd, ESPNowPacket* packet);
 void onESPNowConnectionChanged(bool connected);
 
 // Telemetrie senden

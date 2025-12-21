@@ -74,12 +74,6 @@ void loop() {
     // ESP-NOW Update (prüft Heartbeat/Timeouts, triggert Events)
     espNow.update();
     
-    // ESP-NOW Daten verarbeiten (aus Result-Queue)
-    ResultQueueItem result;
-    while (espNow.getData(&result)) {
-        onESPNowDataReceived(result.mac, result.mainCmd, result);
-    }
-    
     // Batterie-Status prüfen
     battery.update();
     
@@ -198,17 +192,16 @@ bool initializeSystem() {
     }
     
     // Callback für kritische Batterie
-    battery.setShutdownCallback([](float voltage) {  // float Parameter!
-      logger.logf(LOG_ERROR, "BATTERY", 
-                "Critical battery %.2fV - shutting down!", voltage);
-      Serial.printf("[BATTERY] Critical voltage %.2fV - shutting down!\n", voltage);
-      
-      stopMotors();
-      delay(1000);
-      
-      powerMgr.shutdown();
+    battery.setShutdownCallback([](float voltage) {
+        logger.logf(LOG_ERROR, "BATTERY", "Critical battery %.2fV - shutting down!", voltage);
+        Serial.printf("[BATTERY] Critical voltage %.2fV - shutting down!\n", voltage);
+        
+        stopMotors();
+        delay(1000);
+        
+        powerMgr.shutdown();
     });
-
+    
     // ─────────────────────────────────────────────────────────────────────
     // Power Manager initialisieren
     // ─────────────────────────────────────────────────────────────────────
@@ -244,23 +237,25 @@ bool initializeSystem() {
     // Event-Callbacks für Logging registrieren
     espNow.onEvent(ESPNowEvent::PEER_CONNECTED, [](ESPNowEventData* data) {
         String mac = ESPNowManager::macToString(data->mac);
-        logger.logf(LOG_INFO, "CONNECTION", "Peer %s connected", mac.c_str());
+        logger.logConnection(mac.c_str(), "connected");
         Serial.printf("[ESP-NOW] Peer %s connected\n", mac.c_str());
-        setErrorLED(false);
     });
     
     espNow.onEvent(ESPNowEvent::PEER_DISCONNECTED, [](ESPNowEventData* data) {
         String mac = ESPNowManager::macToString(data->mac);
-        logger.logf(LOG_WARNING, "CONNECTION", "Peer %s disconnected", mac.c_str());
+        logger.logConnection(mac.c_str(), "disconnected");
         Serial.printf("[ESP-NOW] Peer %s disconnected\n", mac.c_str());
-        setErrorLED(true);
     });
     
     espNow.onEvent(ESPNowEvent::HEARTBEAT_TIMEOUT, [](ESPNowEventData* data) {
         String mac = ESPNowManager::macToString(data->mac);
-        logger.logf(LOG_WARNING, "CONNECTION", "Peer %s timeout", mac.c_str());
+        logger.logConnection(mac.c_str(), "timeout");
         Serial.printf("[ESP-NOW] Peer %s timeout\n", mac.c_str());
-        setErrorLED(true);
+    });
+    
+    // Receive-Callback für empfangene Daten setzen
+    espNow.setReceiveCallback([](const uint8_t* mac, ESPNowPacket& packet) {
+        onESPNowDataReceived(mac, packet.getMainCmd(), &packet);
     });
     
     // ─────────────────────────────────────────────────────────────────────
@@ -359,7 +354,7 @@ void blinkStatusLED(int times) {
 // ESP-NOW CALLBACKS
 // ═══════════════════════════════════════════════════════════════════════════
 
-void onESPNowDataReceived(const uint8_t* mac, MainCmd cmd, const ResultQueueItem& result) {
+void onESPNowDataReceived(const uint8_t* mac, MainCmd cmd, ESPNowPacket* packet) {
     lastRemoteActivity = millis();
     
     // Verbindung herstellen
@@ -377,30 +372,34 @@ void onESPNowDataReceived(const uint8_t* mac, MainCmd cmd, const ResultQueueItem
             
         case MainCmd::DATA_REQUEST:
         case MainCmd::USER_START:
-            // Motor-Befehle verarbeiten (aus vorgeparster Struktur)
-            if (result.data.hasMotor) {
-                int16_t left = result.data.motorLeft;
-                int16_t right = result.data.motorRight;
-                
-                setMotorSpeed(left, right);
-                
-                logger.logf(LOG_INFO, "MOTOR", "Left: %d, Right: %d", left, right);
+            // Motor-Befehle direkt verarbeiten (falls vorhanden)
+            if (packet->has(DataCmd::MOTOR_LEFT) && packet->has(DataCmd::MOTOR_RIGHT)) {
+                int16_t left, right;
+                if (packet->getInt16(DataCmd::MOTOR_LEFT, left) && 
+                    packet->getInt16(DataCmd::MOTOR_RIGHT, right)) {
+                    setMotorSpeed(left, right);
+                    logger.logf(LOG_INFO, "MOTOR", "Left: %d, Right: %d", left, right);
+                }
             }
             
             // Joystick-Daten verarbeiten (falls vorhanden)
-            if (result.data.hasJoystick) {
-                // Joystick zu Motor-Geschwindigkeit konvertieren
-                int16_t left = result.data.joystickY + result.data.joystickX;  // Vorwärts + Links/Rechts
-                int16_t right = result.data.joystickY - result.data.joystickX;
-                
-                // Auf -100 bis +100 begrenzen
-                left = constrain(left, -100, 100);
-                right = constrain(right, -100, 100);
-                
-                setMotorSpeed(left, right);
-                
-                logger.logf(LOG_INFO, "MOTOR", "Joy: X=%d Y=%d -> L=%d R=%d", 
-                           result.data.joystickX, result.data.joystickY, left, right);
+            if (packet->has(DataCmd::JOYSTICK_X) && packet->has(DataCmd::JOYSTICK_Y)) {
+                int16_t joyX, joyY;
+                if (packet->getInt16(DataCmd::JOYSTICK_X, joyX) && 
+                    packet->getInt16(DataCmd::JOYSTICK_Y, joyY)) {
+                    // Joystick zu Motor-Geschwindigkeit konvertieren (Tank-Steuerung)
+                    int16_t left = joyY + joyX;   // Vorwärts + Links/Rechts
+                    int16_t right = joyY - joyX;
+                    
+                    // Auf -100 bis +100 begrenzen
+                    left = constrain(left, -100, 100);
+                    right = constrain(right, -100, 100);
+                    
+                    setMotorSpeed(left, right);
+                    
+                    logger.logf(LOG_INFO, "MOTOR", "Joy: X=%d Y=%d -> L=%d R=%d", 
+                               joyX, joyY, left, right);
+                }
             }
             break;
             
@@ -427,22 +426,23 @@ void onESPNowConnectionChanged(bool connected) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 void sendTelemetry() {
-    // Paket erstellen
-    ESPNowPacket packet(MainCmd::DATA_RESPONSE);
+    // Paket erstellen mit Builder-Pattern
+    ESPNowPacket packet;
+    packet.begin(MainCmd::DATA_RESPONSE);
     
     // Batterie-Daten
     uint16_t voltage = (uint16_t)(battery.getVoltage() * 1000); // mV
     uint8_t percent = battery.getPercent();
-    packet.addData(DataCmd::BATTERY_VOLTAGE, voltage);
-    packet.addData(DataCmd::BATTERY_PERCENT, percent);
+    packet.addUInt16(DataCmd::BATTERY_VOLTAGE, voltage);
+    packet.addByte(DataCmd::BATTERY_PERCENT, percent);
     
     // RSSI
     int8_t rssi = WiFi.RSSI();
-    packet.addData(DataCmd::RSSI, rssi);
+    packet.addInt8(DataCmd::RSSI, rssi);
     
     // Verbindungsstatus
     uint8_t connectionStatus = remoteConnected ? 1 : 0;
-    packet.addData(DataCmd::CONNECTION, connectionStatus);
+    packet.addByte(DataCmd::CONNECTION, connectionStatus);
     
     // An alle Peers senden (Broadcast)
     espNow.broadcast(packet);
