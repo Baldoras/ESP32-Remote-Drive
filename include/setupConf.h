@@ -35,18 +35,22 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Motor Links
-#define MOTOR_LEFT_PWM      10    // PWM für linken Motor (Geschwindigkeit)
-#define MOTOR_LEFT_IN1      11    // IN1 für linken Motor (Richtung)
-#define MOTOR_LEFT_IN2      12    // IN2 für linken Motor (Richtung)
+#define MOTOR_ENA      10    // PWM für linken Motor (Geschwindigkeit)
+#define MOTOR_IN1      11    // IN1 für linken Motor (Richtung)
+#define MOTOR_IN2      12    // IN2 für linken Motor (Richtung)
 
 // Motor Rechts
-#define MOTOR_RIGHT_PWM     13    // PWM für rechten Motor (Geschwindigkeit)
-#define MOTOR_RIGHT_IN1     9     // IN1 für rechten Motor (Richtung)
-#define MOTOR_RIGHT_IN2     16    // IN2 für rechten Motor (Richtung)
+#define MOTOR_ENB     13    // PWM für rechten Motor (Geschwindigkeit)
+#define MOTOR_IN3     9     // IN1 für rechten Motor (Richtung)
+#define MOTOR_IN4     16    // IN2 für rechten Motor (Richtung)
 
 // Motor PWM Einstellungen
 #define MOTOR_PWM_FREQ      20000 // 20 kHz PWM-Frequenz
 #define MOTOR_PWM_RES       8     // 8-Bit Auflösung (0-255)
+
+// Motor Identifikation
+#define MOTOR_ID_LEFT       0     // Linker Motor
+#define MOTOR_ID_RIGHT      1     // Rechter Motor
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 💡 STATUS-LED PINS

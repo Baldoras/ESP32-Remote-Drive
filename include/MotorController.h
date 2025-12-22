@@ -22,11 +22,8 @@ public:
     // Initialize motor controller
     void begin();
     
-    // Main control method: x=steering (-100 to +100), y=throttle (-100 to +100), pwm=max speed (0-255)
-    void setMovement(int8_t x, int8_t y, uint8_t pwm);
-    
-    // Direct motor control
-    void setMotors(int8_t leftSpeed, int8_t rightSpeed, uint8_t maxPWM);
+    // Process movement input with improved differential steering
+    void processMovementInput(int8_t joystickX, int8_t joystickY);
     
     // Emergency stop
     void stop();
@@ -51,11 +48,7 @@ private:
     bool enabled;
     
     // Internal motor control
-    void setLeftMotor(int8_t speed, uint8_t maxPWM);
-    void setRightMotor(int8_t speed, uint8_t maxPWM);
-    
-    // Calculate differential steering
-    void calculateDifferentialSteering(int8_t x, int8_t y, int8_t& leftSpeed, int8_t& rightSpeed);
+    void setMotor(uint8_t motor, bool forward, uint8_t pwm);
 };
 
 #endif // MOTOR_CONTROLLER_H

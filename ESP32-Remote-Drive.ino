@@ -25,10 +25,14 @@
 #include "include/PowerManager.h"
 #include "include/ESPNowManager.h"
 #include "include/BatteryMonitor.h"
+#include "include/MotorController.h"
 #include "include/setupConf.h"
 #include "include/Globals.h"
 
 // Globale Instanzen und Variablen sind in Globals.cpp definiert
+
+// Motor Controller Instanz
+MotorController motorCtrl;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SETUP
@@ -77,10 +81,13 @@ void loop() {
     // Batterie-Status prüfen
     battery.update();
     
+    // Motor Controller Update
+    motorCtrl.update();
+    
     // Connection-Timeout prüfen (2 Sekunden)
     if (remoteConnected && (millis() - lastRemoteActivity > 2000)) {
         remoteConnected = false;
-        stopMotors();
+        motorCtrl.stop();
         setErrorLED(true);
         logger.warning("CONNECTION", "Remote connection timeout");
     }
@@ -117,26 +124,6 @@ bool initializeSystem() {
     pinMode(LED_ERROR, OUTPUT);
     setStatusLED(false);
     setErrorLED(false);
-    
-    // ─────────────────────────────────────────────────────────────────────
-    // Motor-Pins initialisieren
-    // ─────────────────────────────────────────────────────────────────────
-    Serial.println("[INIT] Initializing motors...");
-    
-    // PWM Setup für linken Motor (ESP32 Core 3.3.0 API)
-    ledcAttach(MOTOR_LEFT_PWM, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
-    
-    // PWM Setup für rechten Motor (ESP32 Core 3.3.0 API)
-    ledcAttach(MOTOR_RIGHT_PWM, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
-    
-    // Richtungs-Pins
-    pinMode(MOTOR_LEFT_IN1, OUTPUT);
-    pinMode(MOTOR_LEFT_IN2, OUTPUT);
-    pinMode(MOTOR_RIGHT_IN1, OUTPUT);
-    pinMode(MOTOR_RIGHT_IN2, OUTPUT);
-    
-    // Motoren stoppen
-    stopMotors();
     
     // ─────────────────────────────────────────────────────────────────────
     // SD-Card initialisieren
@@ -196,7 +183,7 @@ bool initializeSystem() {
         logger.logf(LOG_ERROR, "BATTERY", "Critical battery %.2fV - shutting down!", voltage);
         Serial.printf("[BATTERY] Critical voltage %.2fV - shutting down!\n", voltage);
         
-        stopMotors();
+        motorCtrl.stop();
         delay(1000);
         
         powerMgr.shutdown();
@@ -207,6 +194,14 @@ bool initializeSystem() {
     // ─────────────────────────────────────────────────────────────────────
     Serial.println("[INIT] Initializing power manager...");
     powerMgr.begin(&logger, &battery);
+    
+    // ─────────────────────────────────────────────────────────────────────
+    // Motor Controller initialisieren
+    // ─────────────────────────────────────────────────────────────────────
+    Serial.println("[INIT] Initializing motor controller...");
+    motorCtrl.begin();
+    motorCtrl.enable();
+    Serial.println("  ✅ Motor Controller OK");
     
     // ─────────────────────────────────────────────────────────────────────
     // ESP-NOW initialisieren
@@ -277,56 +272,11 @@ bool initializeSystem() {
 void shutdownSystem() {
     logger.info("BOOT", "System shutting down");
     
-    stopMotors();
+    motorCtrl.stop();
     espNow.end();
     sdCard.end();
     
     Serial.println("[SHUTDOWN] System shutdown complete");
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// MOTOR-STEUERUNG
-// ═══════════════════════════════════════════════════════════════════════════
-
-void setMotorSpeed(int16_t left, int16_t right) {
-    // Werte begrenzen auf -100 bis +100
-    left = constrain(left, -100, 100);
-    right = constrain(right, -100, 100);
-    
-    motorLeftSpeed = left;
-    motorRightSpeed = right;
-    
-    // Linker Motor
-    uint8_t leftPWM = abs(left) * 255 / 100;
-    if (left > 0) {
-        digitalWrite(MOTOR_LEFT_IN1, HIGH);
-        digitalWrite(MOTOR_LEFT_IN2, LOW);
-    } else if (left < 0) {
-        digitalWrite(MOTOR_LEFT_IN1, LOW);
-        digitalWrite(MOTOR_LEFT_IN2, HIGH);
-    } else {
-        digitalWrite(MOTOR_LEFT_IN1, LOW);
-        digitalWrite(MOTOR_LEFT_IN2, LOW);
-    }
-    ledcWrite(MOTOR_LEFT_PWM, leftPWM);  // Core 3.3.0: Pin direkt, kein Channel
-    
-    // Rechter Motor
-    uint8_t rightPWM = abs(right) * 255 / 100;
-    if (right > 0) {
-        digitalWrite(MOTOR_RIGHT_IN1, HIGH);
-        digitalWrite(MOTOR_RIGHT_IN2, LOW);
-    } else if (right < 0) {
-        digitalWrite(MOTOR_RIGHT_IN1, LOW);
-        digitalWrite(MOTOR_RIGHT_IN2, HIGH);
-    } else {
-        digitalWrite(MOTOR_RIGHT_IN1, LOW);
-        digitalWrite(MOTOR_RIGHT_IN2, LOW);
-    }
-    ledcWrite(MOTOR_RIGHT_PWM, rightPWM);  // Core 3.3.0: Pin direkt, kein Channel
-}
-
-void stopMotors() {
-    setMotorSpeed(0, 0);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -372,33 +322,16 @@ void onESPNowDataReceived(const uint8_t* mac, MainCmd cmd, ESPNowPacket* packet)
             
         case MainCmd::DATA_REQUEST:
         case MainCmd::USER_START:
-            // Motor-Befehle direkt verarbeiten (falls vorhanden)
-            if (packet->has(DataCmd::MOTOR_LEFT) && packet->has(DataCmd::MOTOR_RIGHT)) {
-                int16_t left, right;
-                if (packet->getInt16(DataCmd::MOTOR_LEFT, left) && 
-                    packet->getInt16(DataCmd::MOTOR_RIGHT, right)) {
-                    setMotorSpeed(left, right);
-                    logger.logf(LOG_INFO, "MOTOR", "Left: %d, Right: %d", left, right);
-                }
-            }
-            
             // Joystick-Daten verarbeiten (falls vorhanden)
             if (packet->has(DataCmd::JOYSTICK_X) && packet->has(DataCmd::JOYSTICK_Y)) {
                 int16_t joyX, joyY;
                 if (packet->getInt16(DataCmd::JOYSTICK_X, joyX) && 
                     packet->getInt16(DataCmd::JOYSTICK_Y, joyY)) {
-                    // Joystick zu Motor-Geschwindigkeit konvertieren (Tank-Steuerung)
-                    int16_t left = joyY + joyX;   // Vorwärts + Links/Rechts
-                    int16_t right = joyY - joyX;
                     
-                    // Auf -100 bis +100 begrenzen
-                    left = constrain(left, -100, 100);
-                    right = constrain(right, -100, 100);
+                    // MotorController verarbeitet die Joystick-Eingabe mit Differential Steering
+                    motorCtrl.processMovementInput((int8_t)joyX, (int8_t)joyY);
                     
-                    setMotorSpeed(left, right);
-                    
-                    logger.logf(LOG_INFO, "MOTOR", "Joy: X=%d Y=%d -> L=%d R=%d", 
-                               joyX, joyY, left, right);
+                    logger.logf(LOG_DEBUG, "MOTOR", "Joystick: X=%d Y=%d", joyX, joyY);
                 }
             }
             break;
@@ -412,7 +345,7 @@ void onESPNowConnectionChanged(bool connected) {
     remoteConnected = connected;
     
     if (!connected) {
-        stopMotors();
+        motorCtrl.stop();
         setErrorLED(true);
         logger.warning("CONNECTION", "Remote disconnected");
     } else {
@@ -435,6 +368,11 @@ void sendTelemetry() {
     uint8_t percent = battery.getPercent();
     packet.addUInt16(DataCmd::BATTERY_VOLTAGE, voltage);
     packet.addByte(DataCmd::BATTERY_PERCENT, percent);
+    
+    // Motor-Telemetrie
+    MotorTelemetry motorTel = motorCtrl.getTelemetry();
+    packet.addInt8(DataCmd::MOTOR_LEFT, motorTel.leftSpeed);
+    packet.addInt8(DataCmd::MOTOR_RIGHT, motorTel.rightSpeed);
     
     // RSSI
     int8_t rssi = WiFi.RSSI();

@@ -19,7 +19,7 @@ MotorController::MotorController()
 }
 
 void MotorController::begin() {
-    logger.log(LogLevel::LOG_INFO, LogCategory::LOG_CAT_GENERAL, "MotorController", "Initializing motor controller");
+    logger.info("MotorController", "Initializing motor controller");
     
     // Read pin configuration from setupConf.h
     pinEnA = MOTOR_ENA;
@@ -37,51 +37,61 @@ void MotorController::begin() {
     pinMode(pinIn3, OUTPUT);
     pinMode(pinIn4, OUTPUT);
     
-    // Set PWM frequency (optional, ESP32 default is ~5kHz)
-    // ledcSetup() can be used here if needed
-    
     // Initial state: motors stopped
     stop();
     
-    logger->log(LogLevel::LOG_INFO, LogCategory::LOG_CAT_GENERAL, "MotorController", "Motor controller initialized");
+    logger.info("MotorController", "Motor controller initialized");
 }
 
-void MotorController::setMovement(int8_t x, int8_t y, uint8_t pwm) {
+void MotorController::processMovementInput(int8_t joystickX, int8_t joystickY) {
     if (!enabled) {
-        logger->log(LogLevel::LOG_WARNING, LogCategory::LOG_CAT_GENERAL,"MotorController", "Movement command ignored - motors disabled");
+        stop();
         return;
     }
-    
-    // Constrain inputs
-    x = constrain(x, -100, 100);
-    y = constrain(y, -100, 100);
-    pwm = constrain(pwm, 0, 255);
-    
-    // Calculate differential steering
-    int8_t leftSpeed, rightSpeed;
-    calculateDifferentialSteering(x, y, leftSpeed, rightSpeed);
-    
-    // Apply motor speeds
-    setMotors(leftSpeed, rightSpeed, pwm);
-    
-    logger.log(LogLevel::LOG_DEBUG, "MotorController", 
-               String("Movement: x=") + x + " y=" + y + " pwm=" + pwm + 
-               " -> L=" + leftSpeed + " R=" + rightSpeed);
-}
 
-void MotorController::setMotors(int8_t leftSpeed, int8_t rightSpeed, uint8_t maxPWM) {
-    leftSpeed = constrain(leftSpeed, -100, 100);
-    rightSpeed = constrain(rightSpeed, -100, 100);
+    // Berechne Abstand vom Nullpunkt (Joystick-Auslenkung)
+    float distance = sqrt(joystickX * joystickX + joystickY * joystickY);
     
-    setLeftMotor(leftSpeed, maxPWM);
-    setRightMotor(rightSpeed, maxPWM);
+    // Skaliere auf maximal 100, falls Abstand größer
+    float scaleFactor = 1.0;
+    if (distance > 100.0) {
+        scaleFactor = 100.0 / distance;
+    }
+    
+    // Skalierte Joystick-Werte
+    float scaledX = joystickX * scaleFactor;
+    float scaledY = joystickY * scaleFactor;
+
+    // Differential steering
+    // leftSpeed: Vorwärts/Rückwärts + Drehung nach rechts erhöht links
+    // rightSpeed: Vorwärts/Rückwärts - Drehung nach rechts verringert rechts
+    float leftSpeed = scaledY + scaledX;   // Range: -200 bis +200
+    float rightSpeed = scaledY - scaledX;  // Range: -200 bis +200
+
+    // Skaliere auf PWM-Bereich (0-255) basierend auf kombinierter Geschwindigkeit
+    // leftSpeed/rightSpeed liegen zwischen -200 und +200
+    int leftPWM = (int)(abs(leftSpeed) * 255.0 / 200.0);
+    int rightPWM = (int)(abs(rightSpeed) * 255.0 / 200.0);
+
+    // Begrenze PWM-Werte
+    leftPWM = constrain(leftPWM, 0, 255);
+    rightPWM = constrain(rightPWM, 0, 255);
+
+    // Setze Motoren (Richtung und PWM)
+    setMotor(MOTOR_ID_LEFT, leftSpeed >= 0, leftPWM);
+    setMotor(MOTOR_ID_RIGHT, rightSpeed >= 0, rightPWM);
     
     // Update telemetry
-    telemetry.leftSpeed = leftSpeed;
-    telemetry.rightSpeed = rightSpeed;
-    telemetry.leftPWM = map(abs(leftSpeed), 0, 100, 0, maxPWM);
-    telemetry.rightPWM = map(abs(rightSpeed), 0, 100, 0, maxPWM);
+    telemetry.leftSpeed = (int8_t)constrain(leftSpeed, -100, 100);
+    telemetry.rightSpeed = (int8_t)constrain(rightSpeed, -100, 100);
+    telemetry.leftPWM = leftPWM;
+    telemetry.rightPWM = rightPWM;
     telemetry.lastUpdateMs = millis();
+    
+    // Debug logging
+    logger.debug("MotorController",
+               (String("Movement: X=") + joystickX + " Y=" + joystickY + 
+               " -> L=" + leftSpeed + "(" + leftPWM + ") R=" + rightSpeed + "(" + rightPWM + ")").c_str());
 }
 
 void MotorController::stop() {
@@ -100,20 +110,20 @@ void MotorController::stop() {
     telemetry.rightPWM = 0;
     telemetry.lastUpdateMs = millis();
     
-    logger.log(LogLevel::LOG_INFO, LogCategory::LOG_CAT_GENERAL,"MotorController", "Motors stopped");
+    logger.info("MotorController", "Motors stopped");
 }
 
 void MotorController::enable() {
     enabled = true;
     telemetry.motorsEnabled = true;
-    logger.log(LogLevel::LOG_INFO, LogCategory::LOG_CAT_GENERAL,"MotorController", "Motors enabled");
+    logger.info("MotorController", "Motors enabled");
 }
 
 void MotorController::disable() {
     enabled = false;
     telemetry.motorsEnabled = false;
     stop();
-    logger.log(LogLevel::LOG_INFO, LogCategory::LOG_CAT_GENERAL,"MotorController", "Motors disabled");
+    logger.info("MotorController", "Motors disabled");
 }
 
 MotorTelemetry MotorController::getTelemetry() const {
@@ -125,62 +135,27 @@ void MotorController::update() {
     // Could implement timeout safety stop if no command received
 }
 
-void MotorController::setLeftMotor(int8_t speed, uint8_t maxPWM) {
-    uint8_t pwmValue = map(abs(speed), 0, 100, 0, maxPWM);
-    
-    if (speed > 0) {
-        // Forward
-        digitalWrite(pinIn1, HIGH);
-        digitalWrite(pinIn2, LOW);
-    } else if (speed < 0) {
-        // Backward
-        digitalWrite(pinIn1, LOW);
-        digitalWrite(pinIn2, HIGH);
-    } else {
-        // Stop
-        digitalWrite(pinIn1, LOW);
-        digitalWrite(pinIn2, LOW);
+void MotorController::setMotor(uint8_t motor, bool forward, uint8_t pwm) {
+    if (motor == MOTOR_ID_LEFT) {
+        // Left motor control
+        if (forward) {
+            digitalWrite(pinIn1, HIGH);
+            digitalWrite(pinIn2, LOW);
+        } else {
+            digitalWrite(pinIn1, LOW);
+            digitalWrite(pinIn2, HIGH);
+        }
+        analogWrite(pinEnA, pwm);
+    } 
+    else if (motor == MOTOR_ID_RIGHT) {
+        // Right motor control
+        if (forward) {
+            digitalWrite(pinIn3, HIGH);
+            digitalWrite(pinIn4, LOW);
+        } else {
+            digitalWrite(pinIn3, LOW);
+            digitalWrite(pinIn4, HIGH);
+        }
+        analogWrite(pinEnB, pwm);
     }
-    
-    analogWrite(pinEnA, pwmValue);
-}
-
-void MotorController::setRightMotor(int8_t speed, uint8_t maxPWM) {
-    uint8_t pwmValue = map(abs(speed), 0, 100, 0, maxPWM);
-    
-    if (speed > 0) {
-        // Forward
-        digitalWrite(pinIn3, HIGH);
-        digitalWrite(pinIn4, LOW);
-    } else if (speed < 0) {
-        // Backward
-        digitalWrite(pinIn3, LOW);
-        digitalWrite(pinIn4, HIGH);
-    } else {
-        // Stop
-        digitalWrite(pinIn3, LOW);
-        digitalWrite(pinIn4, LOW);
-    }
-    
-    analogWrite(pinEnB, pwmValue);
-}
-
-void MotorController::calculateDifferentialSteering(int8_t x, int8_t y, int8_t& leftSpeed, int8_t& rightSpeed) {
-    // Differential steering algorithm
-    // x: steering (-100 left, +100 right)
-    // y: throttle (-100 backward, +100 forward)
-    
-    // Basic mixing algorithm
-    float left = y + x;
-    float right = y - x;
-    
-    // Normalize if values exceed range
-    float maxMagnitude = max(abs(left), abs(right));
-    if (maxMagnitude > 100.0) {
-        left = (left / maxMagnitude) * 100.0;
-        right = (right / maxMagnitude) * 100.0;
-    }
-    
-    leftSpeed = (int8_t)constrain(left, -100, 100);
-    rightSpeed = (int8_t)constrain(right, -100, 100);
 }
