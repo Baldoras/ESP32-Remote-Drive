@@ -123,7 +123,14 @@ void SerialCommandHandler::processCommand(const String& cmd) {
     }
     else if (command == "config") {
         if (args.length() == 0) {
-            handleConfigList();  // Standard: Liste anzeigen
+            // Ohne Argumente: Aktuelle Config anzeigen
+            if (!config) {
+                Serial.println("❌ UserConfig nicht verfügbar");
+            } else {
+                printHeader("Aktuelle Konfiguration");
+                config->printInfo();
+                printSeparator();
+            }
         } else {
             // config list / get / set / save / reset
             int spaceIdx = args.indexOf(' ');
