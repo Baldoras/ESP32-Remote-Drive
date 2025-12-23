@@ -39,14 +39,14 @@
 #define ESPNOW_MAX_PEERS          5                   // Maximale Anzahl Peers
 #define ESPNOW_CHANNEL            0                   // WiFi-Kanal (0 = auto)
 #define ESPNOW_HEARTBEAT_INTERVAL 500                 // Heartbeat alle 500ms
-#define ESPNOW_TIMEOUT_MS         2000                // Verbindungs-Timeout 2s
-#define ESPNOW_PEER_DEVICE_MAC    "11:22:33:44:55:66" // Peer device MAC (Beispiel)
+#define ESPNOW_TIMEOUT            2000                // Verbindungs-Timeout 2s
+#define ESPNOW_PEER_MAC           "11:22:33:44:55:66" // Peer device MAC (Beispiel)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 🕹️ JOYSTICK BENUTZER-EINSTELLUNGEN
 // ═══════════════════════════════════════════════════════════════════════════
 
-#define JOY_DEADZONE         5     // Deadzone in % (0-100)
+#define JOY_DEADZONE_PERCENT 5     // Deadzone in % (0-100)
 #define JOY_UPDATE_INTERVAL  20    // Update-Intervall in ms
 #define JOY_INVERT_X         true  // X-Achse invertieren
 #define JOY_INVERT_Y         true  // Y-Achse invertieren

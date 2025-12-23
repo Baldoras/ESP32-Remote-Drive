@@ -123,7 +123,7 @@ void SerialCommandHandler::processCommand(const String& cmd) {
     }
     else if (command == "config") {
         if (args.length() == 0) {
-            handleConfig();
+            handleConfigList();  // Standard: Liste anzeigen
         } else {
             // config list / get / set / save / reset
             int spaceIdx = args.indexOf(' ');
@@ -382,19 +382,6 @@ void SerialCommandHandler::handleSysInfo() {
     printSeparator();
 }
 
-void SerialCommandHandler::handleConfig() {
-    if (!config) {
-        Serial.println("❌ UserConfig nicht verfügbar");
-        return;
-    }
-    
-    printHeader("Konfiguration");
-    
-    config->printInfo();
-    
-    printSeparator();
-}
-
 void SerialCommandHandler::handleBattery() {
     if (!battery) {
         Serial.println("❌ BatteryMonitor nicht verfügbar");
@@ -412,7 +399,7 @@ void SerialCommandHandler::handleBattery() {
 }
 
 void SerialCommandHandler::handleESPNow() {
-     if (!espNow) {
+    if (!espNow) {
         Serial.println("❌ ESPNowManager nicht verfügbar");
         return;
     }
@@ -421,11 +408,12 @@ void SerialCommandHandler::handleESPNow() {
     
     Serial.printf("Own MAC:       %s\n", espNow->getOwnMacString().c_str());
     Serial.printf("Connected:     %s\n", espNow->isConnected() ? "JA" : "NEIN");
+    Serial.printf("Peer Count:    %d\n", espNow->getPeerCount());
     
-    int rxPending = espNow->getQueuePending();
+    int queuePending = espNow->getQueuePending();
     
     Serial.println();
-    Serial.printf("RX Queue:      %d\n", rxPending);
+    Serial.printf("RX Queue:      %d\n", queuePending);
     
     printSeparator();
 }
@@ -546,48 +534,74 @@ void SerialCommandHandler::handleConfigList() {
     
     printHeader("Verfügbare Config-Keys");
     
-    Serial.println("📺 DISPLAY:");
-    Serial.println("  backlight_default      (0-255)");
-    Serial.println();
+    // Schema abrufen
+    ConfigScheme scheme = config->getConfigScheme();
     
-    Serial.println("👆 TOUCH:");
-    Serial.println("  touch_min_x            (0-4095)");
-    Serial.println("  touch_max_x            (0-4095)");
-    Serial.println("  touch_min_y            (0-4095)");
-    Serial.println("  touch_max_y            (0-4095)");
-    Serial.println("  touch_threshold        (0-65535)");
-    Serial.println("  touch_rotation         (0-3)");
-    Serial.println();
+    // Nach Kategorie gruppiert ausgeben
+    const char* currentCategory = nullptr;
     
-    Serial.println("📡 ESP-NOW:");
-    Serial.println("  espnow_channel         (0-14, 0=auto)");
-    Serial.println("  espnow_max_peers       (1-20)");
-    Serial.println("  espnow_heartbeat       (ms)");
-    Serial.println("  espnow_timeout         (ms)");
-    Serial.println("  espnow_peer_mac        (XX:XX:XX:XX:XX:XX)");
-    Serial.println();
-    
-    Serial.println("🕹️  JOYSTICK:");
-    Serial.println("  joy_deadzone           (0-100)");
-    Serial.println("  joy_update_interval    (ms)");
-    Serial.println("  joy_invert_x           (0/1)");
-    Serial.println("  joy_invert_y           (0/1)");
-    Serial.println("  joy_cal_x_min          (-32768 - 32767)");
-    Serial.println("  joy_cal_x_center       (-32768 - 32767)");
-    Serial.println("  joy_cal_x_max          (-32768 - 32767)");
-    Serial.println("  joy_cal_y_min          (-32768 - 32767)");
-    Serial.println("  joy_cal_y_center       (-32768 - 32767)");
-    Serial.println("  joy_cal_y_max          (-32768 - 32767)");
-    Serial.println();
-    
-    Serial.println("⚡ POWER:");
-    Serial.println("  auto_shutdown          (0/1)");
-    Serial.println();
-    
-    Serial.println("🐛 DEBUG:");
-    Serial.println("  debug_serial           (0/1)");
+    for (size_t i = 0; i < scheme.count; i++) {
+        const ConfigItem& item = scheme.items[i];
+        
+        // Neue Kategorie?
+        if (currentCategory == nullptr || strcmp(currentCategory, item.category) != 0) {
+            if (currentCategory != nullptr) Serial.println();
+            
+            // Kategorie-Header mit Icon
+            if (strcmp(item.category, "Display") == 0) {
+                Serial.println("📺 DISPLAY:");
+            } else if (strcmp(item.category, "Touch") == 0) {
+                Serial.println("👆 TOUCH:");
+            } else if (strcmp(item.category, "ESP-NOW") == 0) {
+                Serial.println("📡 ESP-NOW:");
+            } else if (strcmp(item.category, "Joystick") == 0) {
+                Serial.println("🕹️  JOYSTICK:");
+            } else if (strcmp(item.category, "Power") == 0) {
+                Serial.println("⚡ POWER:");
+            } else if (strcmp(item.category, "Debug") == 0) {
+                Serial.println("🐛 DEBUG:");
+            } else {
+                Serial.printf("⚙️  %s:\n", item.category);
+            }
+            
+            currentCategory = item.category;
+        }
+        
+        // Key mit Typ und Range ausgeben
+        Serial.printf("  %-25s", item.key);
+        
+        // Typ-Info
+        switch (item.type) {
+            case ConfigType::UINT8:
+            case ConfigType::UINT16:
+            case ConfigType::UINT32:
+            case ConfigType::INT16:
+            case ConfigType::INT32:
+                if (item.hasRange) {
+                    Serial.printf("(%.0f-%.0f)", item.minValue, item.maxValue);
+                } else {
+                    Serial.print("(numeric)");
+                }
+                break;
+            case ConfigType::BOOL:
+                Serial.print("(0/1)");
+                break;
+            case ConfigType::STRING:
+                if (item.maxLength > 0) {
+                    Serial.printf("(max %d chars)", item.maxLength);
+                } else {
+                    Serial.print("(string)");
+                }
+                break;
+            case ConfigType::FLOAT:
+                Serial.print("(float)");
+                break;
+        }
+        Serial.println();
+    }
     
     printSeparator();
+    Serial.printf("Gesamt: %zu Config-Keys\n", scheme.count);
 }
 
 void SerialCommandHandler::handleConfigGet(const String& key) {
@@ -596,94 +610,25 @@ void SerialCommandHandler::handleConfigGet(const String& key) {
         return;
     }
     
-    String lowerKey = key;
-    lowerKey.toLowerCase();
+    // ConfigItem suchen
+    const ConfigItem* item = findConfigItem(key.c_str());
+    
+    if (!item) {
+        Serial.printf("❌ Unbekannter Key: '%s'\n", key.c_str());
+        Serial.println("   Tippe 'config list' für alle Keys");
+        return;
+    }
     
     char buffer[128];
     snprintf(buffer, sizeof(buffer), "Config: %s", key.c_str());
     printHeader(buffer);
     
-    // Display
-    if (lowerKey == "backlight_default") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getBacklightDefault());
-    }
-    // Touch
-    else if (lowerKey == "touch_min_x") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getTouchMinX());
-    }
-    else if (lowerKey == "touch_max_x") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getTouchMaxX());
-    }
-    else if (lowerKey == "touch_min_y") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getTouchMinY());
-    }
-    else if (lowerKey == "touch_max_y") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getTouchMaxY());
-    }
-    else if (lowerKey == "touch_threshold") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getTouchThreshold());
-    }
-    else if (lowerKey == "touch_rotation") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getTouchRotation());
-    }
-    // ESP-NOW
-    else if (lowerKey == "espnow_channel") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getEspnowChannel());
-    }
-    else if (lowerKey == "espnow_max_peers") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getEspnowMaxPeers());
-    }
-    else if (lowerKey == "espnow_heartbeat") {
-        Serial.printf("%s = %lu\n", key.c_str(), config->getEspnowHeartbeat());
-    }
-    else if (lowerKey == "espnow_timeout") {
-        Serial.printf("%s = %lu\n", key.c_str(), config->getEspnowTimeout());
-    }
-    else if (lowerKey == "espnow_peer_mac") {
-        Serial.printf("%s = %s\n", key.c_str(), config->getEspnowPeerMac());
-    }
-    // Joystick
-    else if (lowerKey == "joy_deadzone") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getJoyDeadzone());
-    }
-    else if (lowerKey == "joy_update_interval") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getJoyUpdateInterval());
-    }
-    else if (lowerKey == "joy_invert_x") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getJoyInvertX() ? 1 : 0);
-    }
-    else if (lowerKey == "joy_invert_y") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getJoyInvertY() ? 1 : 0);
-    }
-    else if (lowerKey == "joy_cal_x_min") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getJoyCalXMin());
-    }
-    else if (lowerKey == "joy_cal_x_center") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getJoyCalXCenter());
-    }
-    else if (lowerKey == "joy_cal_x_max") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getJoyCalXMax());
-    }
-    else if (lowerKey == "joy_cal_y_min") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getJoyCalYMin());
-    }
-    else if (lowerKey == "joy_cal_y_center") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getJoyCalYCenter());
-    }
-    else if (lowerKey == "joy_cal_y_max") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getJoyCalYMax());
-    }
-    // Power
-    else if (lowerKey == "auto_shutdown") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getAutoShutdown() ? 1 : 0);
-    }
-    // Debug
-    else if (lowerKey == "debug_serial") {
-        Serial.printf("%s = %d\n", key.c_str(), config->getDebugSerialEnabled() ? 1 : 0);
-    }
-    else {
-        Serial.printf("❌ Unbekannter Key: '%s'\n", key.c_str());
-        Serial.println("   Tippe 'config list' für alle Keys");
+    // Wert auslesen
+    char valueBuf[64];
+    if (getConfigValueAsString(item, valueBuf, sizeof(valueBuf))) {
+        Serial.printf("%s = %s\n", key.c_str(), valueBuf);
+    } else {
+        Serial.println("❌ Fehler beim Lesen des Wertes");
     }
     
     printSeparator();
@@ -695,202 +640,25 @@ void SerialCommandHandler::handleConfigSet(const String& key, const String& valu
         return;
     }
     
-    String lowerKey = key;
-    lowerKey.toLowerCase();
+    // ConfigItem suchen
+    const ConfigItem* item = findConfigItem(key.c_str());
     
-    bool success = false;
-    String errorMsg = "";
-    
-    // Display
-    if (lowerKey == "backlight_default") {
-        int val = value.toInt();
-        if (val >= 0 && val <= 255) {
-            config->setBacklightDefault((uint8_t)val);
-            success = true;
-        } else {
-            errorMsg = "Wert muss 0-255 sein";
-        }
-    }
-    // Touch
-    else if (lowerKey == "touch_min_x") {
-        int val = value.toInt();
-        if (val >= 0 && val <= 4095) {
-            config->setTouchCalibration(val, config->getTouchMaxX(), 
-                                       config->getTouchMinY(), config->getTouchMaxY());
-            success = true;
-        } else {
-            errorMsg = "Wert muss 0-4095 sein";
-        }
-    }
-    else if (lowerKey == "touch_max_x") {
-        int val = value.toInt();
-        if (val >= 0 && val <= 4095) {
-            config->setTouchCalibration(config->getTouchMinX(), val,
-                                       config->getTouchMinY(), config->getTouchMaxY());
-            success = true;
-        } else {
-            errorMsg = "Wert muss 0-4095 sein";
-        }
-    }
-    else if (lowerKey == "touch_min_y") {
-        int val = value.toInt();
-        if (val >= 0 && val <= 4095) {
-            config->setTouchCalibration(config->getTouchMinX(), config->getTouchMaxX(),
-                                       val, config->getTouchMaxY());
-            success = true;
-        } else {
-            errorMsg = "Wert muss 0-4095 sein";
-        }
-    }
-    else if (lowerKey == "touch_max_y") {
-        int val = value.toInt();
-        if (val >= 0 && val <= 4095) {
-            config->setTouchCalibration(config->getTouchMinX(), config->getTouchMaxX(),
-                                       config->getTouchMinY(), val);
-            success = true;
-        } else {
-            errorMsg = "Wert muss 0-4095 sein";
-        }
-    }
-    else if (lowerKey == "touch_threshold") {
-        int val = value.toInt();
-        if (val >= 0 && val <= 65535) {
-            config->setTouchThreshold((uint16_t)val);
-            success = true;
-        } else {
-            errorMsg = "Wert muss 0-65535 sein";
-        }
-    }
-    else if (lowerKey == "touch_rotation") {
-        int val = value.toInt();
-        if (val >= 0 && val <= 3) {
-            config->setTouchRotation((uint8_t)val);
-            success = true;
-        } else {
-            errorMsg = "Wert muss 0-3 sein";
-        }
-    }
-    // ESP-NOW
-    else if (lowerKey == "espnow_channel") {
-        int val = value.toInt();
-        if (val >= 0 && val <= 14) {
-            config->setEspnowChannel((uint8_t)val);
-            success = true;
-        } else {
-            errorMsg = "Wert muss 0-14 sein";
-        }
-    }
-    else if (lowerKey == "espnow_max_peers") {
-        int val = value.toInt();
-        if (val >= 1 && val <= 20) {
-            config->setEspnowMaxPeers((uint8_t)val);
-            success = true;
-        } else {
-            errorMsg = "Wert muss 1-20 sein";
-        }
-    }
-    else if (lowerKey == "espnow_heartbeat") {
-        unsigned long val = value.toInt();
-        config->setEspnowHeartbeat(val);
-        success = true;
-    }
-    else if (lowerKey == "espnow_timeout") {
-        unsigned long val = value.toInt();
-        config->setEspnowTimeout(val);
-        success = true;
-    }
-    else if (lowerKey == "espnow_peer_mac") {
-        // MAC-Adresse Validierung (XX:XX:XX:XX:XX:XX)
-        if (value.length() == 17) {
-            config->setEspnowPeerMac(value.c_str());
-            success = true;
-        } else {
-            errorMsg = "Format muss XX:XX:XX:XX:XX:XX sein";
-        }
-    }
-    // Joystick
-    else if (lowerKey == "joy_deadzone") {
-        int val = value.toInt();
-        if (val >= 0 && val <= 100) {
-            config->setJoyDeadzone((uint8_t)val);
-            success = true;
-        } else {
-            errorMsg = "Wert muss 0-100 sein";
-        }
-    }
-    else if (lowerKey == "joy_update_interval") {
-        int val = value.toInt();
-        if (val > 0) {
-            config->setJoyUpdateInterval((uint16_t)val);
-            success = true;
-        } else {
-            errorMsg = "Wert muss > 0 sein";
-        }
-    }
-    else if (lowerKey == "joy_invert_x") {
-        int val = value.toInt();
-        config->setJoyInvertX(val != 0);
-        success = true;
-    }
-    else if (lowerKey == "joy_invert_y") {
-        int val = value.toInt();
-        config->setJoyInvertY(val != 0);
-        success = true;
-    }
-    else if (lowerKey == "joy_cal_x_min") {
-        int val = value.toInt();
-        config->setJoyCalibration(0, val, config->getJoyCalXCenter(), config->getJoyCalXMax());
-        success = true;
-    }
-    else if (lowerKey == "joy_cal_x_center") {
-        int val = value.toInt();
-        config->setJoyCalibration(0, config->getJoyCalXMin(), val, config->getJoyCalXMax());
-        success = true;
-    }
-    else if (lowerKey == "joy_cal_x_max") {
-        int val = value.toInt();
-        config->setJoyCalibration(0, config->getJoyCalXMin(), config->getJoyCalXCenter(), val);
-        success = true;
-    }
-    else if (lowerKey == "joy_cal_y_min") {
-        int val = value.toInt();
-        config->setJoyCalibration(1, val, config->getJoyCalYCenter(), config->getJoyCalYMax());
-        success = true;
-    }
-    else if (lowerKey == "joy_cal_y_center") {
-        int val = value.toInt();
-        config->setJoyCalibration(1, config->getJoyCalYMin(), val, config->getJoyCalYMax());
-        success = true;
-    }
-    else if (lowerKey == "joy_cal_y_max") {
-        int val = value.toInt();
-        config->setJoyCalibration(1, config->getJoyCalYMin(), config->getJoyCalYCenter(), val);
-        success = true;
-    }
-    // Power
-    else if (lowerKey == "auto_shutdown") {
-        int val = value.toInt();
-        config->setAutoShutdownEnabled(val != 0);
-        success = true;
-    }
-    // Debug
-    else if (lowerKey == "debug_serial") {
-        int val = value.toInt();
-        config->setDebugSerialEnabled(val != 0);
-        success = true;
-    }
-    else {
+    if (!item) {
         Serial.printf("❌ Unbekannter Key: '%s'\n", key.c_str());
         Serial.println("   Tippe 'config list' für alle Keys");
         return;
     }
     
-    if (success) {
+    // Wert setzen
+    if (setConfigValueFromString(item, value.c_str())) {
         Serial.printf("✅ %s = %s\n", key.c_str(), value.c_str());
         Serial.println("⚠️  Config noch nicht gespeichert!");
         Serial.println("   Tippe 'config save' zum Speichern");
     } else {
-        Serial.printf("❌ Fehler: %s\n", errorMsg.c_str());
+        Serial.println("❌ Fehler beim Setzen des Wertes");
+        if (item->hasRange) {
+            Serial.printf("   Erlaubter Bereich: %.0f - %.0f\n", item->minValue, item->maxValue);
+        }
     }
 }
 
@@ -940,6 +708,152 @@ void SerialCommandHandler::handleConfigReset() {
     
     Serial.println("❌ Timeout - Abgebrochen");
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// CONFIG-HILFSFUNKTIONEN (Schema-basiert)
+// ═══════════════════════════════════════════════════════════════════
+
+const ConfigItem* SerialCommandHandler::findConfigItem(const char* key) {
+    if (!config) return nullptr;
+    
+    // Schema abrufen
+    ConfigScheme scheme = config->getConfigScheme();
+    
+    // Durch alle Items iterieren
+    for (size_t i = 0; i < scheme.count; i++) {
+        if (strcasecmp(scheme.items[i].key, key) == 0) {
+            return &scheme.items[i];
+        }
+    }
+    
+    return nullptr;
+}
+
+bool SerialCommandHandler::getConfigValueAsString(const ConfigItem* item, char* buffer, size_t bufferSize) {
+    if (!item || !buffer) return false;
+    
+    switch (item->type) {
+        case ConfigType::UINT8:
+            snprintf(buffer, bufferSize, "%u", *(uint8_t*)item->valuePtr);
+            return true;
+            
+        case ConfigType::UINT16:
+            snprintf(buffer, bufferSize, "%u", *(uint16_t*)item->valuePtr);
+            return true;
+            
+        case ConfigType::UINT32:
+            snprintf(buffer, bufferSize, "%lu", *(uint32_t*)item->valuePtr);
+            return true;
+            
+        case ConfigType::INT16:
+            snprintf(buffer, bufferSize, "%d", *(int16_t*)item->valuePtr);
+            return true;
+            
+        case ConfigType::INT32:
+            snprintf(buffer, bufferSize, "%ld", *(int32_t*)item->valuePtr);
+            return true;
+            
+        case ConfigType::BOOL:
+            snprintf(buffer, bufferSize, "%d", *(bool*)item->valuePtr ? 1 : 0);
+            return true;
+            
+        case ConfigType::STRING:
+            strncpy(buffer, (char*)item->valuePtr, bufferSize - 1);
+            buffer[bufferSize - 1] = '\0';
+            return true;
+            
+        case ConfigType::FLOAT:
+            snprintf(buffer, bufferSize, "%.2f", *(float*)item->valuePtr);
+            return true;
+            
+        default:
+            return false;
+    }
+}
+
+bool SerialCommandHandler::setConfigValueFromString(const ConfigItem* item, const char* value) {
+    if (!item || !value || !config) return false;
+    
+    // Wert konvertieren und Range-Check
+    switch (item->type) {
+        case ConfigType::UINT8: {
+            long val = atol(value);
+            if (item->hasRange && (val < item->minValue || val > item->maxValue)) {
+                return false;
+            }
+            *(uint8_t*)item->valuePtr = (uint8_t)val;
+            return true;
+        }
+        
+        case ConfigType::UINT16: {
+            long val = atol(value);
+            if (item->hasRange && (val < item->minValue || val > item->maxValue)) {
+                return false;
+            }
+            *(uint16_t*)item->valuePtr = (uint16_t)val;
+            return true;
+        }
+        
+        case ConfigType::UINT32: {
+            unsigned long val = strtoul(value, nullptr, 10);
+            if (item->hasRange && (val < item->minValue || val > item->maxValue)) {
+                return false;
+            }
+            *(uint32_t*)item->valuePtr = (uint32_t)val;
+            return true;
+        }
+        
+        case ConfigType::INT16: {
+            long val = atol(value);
+            if (item->hasRange && (val < item->minValue || val > item->maxValue)) {
+                return false;
+            }
+            *(int16_t*)item->valuePtr = (int16_t)val;
+            return true;
+        }
+        
+        case ConfigType::INT32: {
+            long val = atol(value);
+            if (item->hasRange && (val < item->minValue || val > item->maxValue)) {
+                return false;
+            }
+            *(int32_t*)item->valuePtr = (int32_t)val;
+            return true;
+        }
+        
+        case ConfigType::BOOL: {
+            int val = atoi(value);
+            *(bool*)item->valuePtr = (val != 0);
+            return true;
+        }
+        
+        case ConfigType::STRING: {
+            size_t len = strlen(value);
+            if (item->maxLength > 0 && len >= item->maxLength) {
+                return false;
+            }
+            strncpy((char*)item->valuePtr, value, item->maxLength - 1);
+            ((char*)item->valuePtr)[item->maxLength - 1] = '\0';
+            return true;
+        }
+        
+        case ConfigType::FLOAT: {
+            float val = atof(value);
+            if (item->hasRange && (val < item->minValue || val > item->maxValue)) {
+                return false;
+            }
+            *(float*)item->valuePtr = val;
+            return true;
+        }
+        
+        default:
+            return false;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// HILFSFUNKTIONEN
+// ═══════════════════════════════════════════════════════════════════
 
 void SerialCommandHandler::printSeparator() {
     Serial.println("═══════════════════════════════════════════════════════");

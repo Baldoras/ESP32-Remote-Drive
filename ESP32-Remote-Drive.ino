@@ -148,7 +148,7 @@ bool initializeSystem() {
     Serial.println("[INIT] Loading configuration...");
     userConfig.init("/config.json", &sdCard);
     
-    if (sdAvailable && userConfig.isStorageAvailable()) {
+    if (sdAvailable) {
         if (userConfig.load()) {
             Serial.println("  ✅ Config loaded from SD");
             logger.info("BOOT", "Config loaded successfully");

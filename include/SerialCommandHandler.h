@@ -85,10 +85,9 @@ private:
     void handleClear(const String& filename);
     void handleClearAll();
     void handleSysInfo();
-    void handleConfig();
-    void handleConfigSet(const String& key, const String& value);
-    void handleConfigGet(const String& key);
     void handleConfigList();
+    void handleConfigGet(const String& key);
+    void handleConfigSet(const String& key, const String& value);
     void handleConfigSave();
     void handleConfigReset();
     void handleBattery();
@@ -101,6 +100,11 @@ private:
     void readLogFileHead(const char* filepath, int lines);
     void printSeparator();
     void printHeader(const char* title);
+    
+    // Config-Hilfsfunktionen
+    const ConfigItem* findConfigItem(const char* key);
+    bool getConfigValueAsString(const ConfigItem* item, char* buffer, size_t bufferSize);
+    bool setConfigValueFromString(const ConfigItem* item, const char* value);
 };
 
 #endif // SERIAL_COMMAND_HANDLER_H

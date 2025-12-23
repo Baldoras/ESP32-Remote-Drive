@@ -36,7 +36,7 @@ BatteryMonitor::~BatteryMonitor() {
 bool BatteryMonitor::begin() {
     DEBUG_PRINTLN("BatteryMonitor: Initialisiere Spannungssensor...");
     
-    setAutoShutdown(userConfig.getAutoShutdown());
+    setAutoShutdown(userConfig.getAutoShutdownEnabled());
 
     // ADC-Pin konfigurieren
     pinMode(VOLTAGE_SENSOR_PIN, INPUT);
@@ -66,7 +66,7 @@ bool BatteryMonitor::begin() {
 bool BatteryMonitor::update() {
     if (!initialized) return false;
 
-    setAutoShutdown(userConfig.getAutoShutdown());
+    setAutoShutdown(userConfig.getAutoShutdownEnabled());
 
     // Nur alle VOLTAGE_CHECK_INTERVAL ms aktualisieren
     unsigned long now = millis();
