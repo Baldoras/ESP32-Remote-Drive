@@ -1,12 +1,16 @@
 /**
  * BatteryMonitor.h
  * 
- * Batterie-Überwachung für 2S LiPo (6.6V - 8.4V)
+ * Batterie-Überwachung für 4S Li-Ion (12.8V - 16.8V) mit ACS712-20A Stromsensor
  * 
  * Features:
  * - Spannungsmessung mit Glättung (Moving Average)
+ * - Strommessung mit ACS712-20A (3.3V Versorgung)
+ * - Leistungsberechnung (Watt)
+ * - Energieverbrauch (mAh, Wh)
  * - Prozentberechnung (0-100%)
  * - Low-Voltage Warnung
+ * - High-Current Warnung
  * - Auto-Shutdown bei Unterspannung
  * - Callback-Funktionen für Events
  */
@@ -22,6 +26,7 @@
 // Callback-Typen
 typedef void (*BatteryWarningCallback)(float voltage, uint8_t percent);
 typedef void (*BatteryShutdownCallback)(float voltage);
+typedef void (*CurrentWarningCallback)(float current, float power);
 
 class BatteryMonitor {
 public:
@@ -42,7 +47,7 @@ public:
     bool begin();
 
     /**
-     * Spannungsmessung aktualisieren (in loop() aufrufen!)
+     * Spannungs- und Strommessung aktualisieren (in loop() aufrufen!)
      * @return true wenn neue Messung durchgeführt wurde
      */
     bool update();
@@ -58,6 +63,36 @@ public:
      * @return Spannung in Volt
      */
     float getRawVoltage();
+
+    /**
+     * Aktuellen Strom abrufen (gefiltert)
+     * @return Strom in Ampere
+     */
+    float getCurrent();
+
+    /**
+     * Roher Strom abrufen (ungefiltert)
+     * @return Strom in Ampere
+     */
+    float getRawCurrent();
+
+    /**
+     * Aktuelle Leistung abrufen
+     * @return Leistung in Watt
+     */
+    float getPower();
+
+    /**
+     * Verbrauchte Energie abrufen
+     * @return Energie in mAh
+     */
+    float getConsumedMAh();
+
+    /**
+     * Verbrauchte Energie abrufen
+     * @return Energie in Wh
+     */
+    float getConsumedWh();
 
     /**
      * Batterie-Ladezustand abrufen
@@ -78,6 +113,24 @@ public:
     bool isLow();
 
     /**
+     * Ist Strom über Warnlimit?
+     * @return true wenn Strom >= CURRENT_WARNING
+     */
+    bool isCurrentHigh();
+
+    /**
+     * Stromsensor kalibrieren (Nullpunkt-Offset)
+     * Sollte ohne Last aufgerufen werden
+     * @param samples Anzahl Messungen für Durchschnitt (default: 100)
+     */
+    void calibrateCurrent(uint16_t samples = 100);
+
+    /**
+     * Energiezähler zurücksetzen
+     */
+    void resetEnergyCounters();
+
+    /**
      * Callback für Low-Voltage Warnung setzen
      * @param callback Funktion die bei Warnung aufgerufen wird
      */
@@ -88,6 +141,12 @@ public:
      * @param callback Funktion die vor Shutdown aufgerufen wird
      */
     void setShutdownCallback(BatteryShutdownCallback callback);
+
+    /**
+     * Callback für High-Current Warnung setzen
+     * @param callback Funktion die bei hohem Strom aufgerufen wird
+     */
+    void setCurrentWarningCallback(CurrentWarningCallback callback);
 
     /**
      * Auto-Shutdown aktivieren/deaktivieren
@@ -114,29 +173,55 @@ private:
     float rawVoltage;              // Rohe ungefilterte Spannung
     uint8_t currentPercent;        // Aktueller Ladezustand in %
     
-    // Moving Average Filter
-    static const uint8_t FILTER_SAMPLES = 10;
-    float voltageBuffer[FILTER_SAMPLES];
-    uint8_t bufferIndex;
-    bool bufferFilled;
+    // Strommessung
+    float currentCurrent;          // Aktueller gefilterter Strom (A)
+    float rawCurrent;              // Roher ungefilterter Strom (A)
+    float currentPower;            // Aktuelle Leistung (W)
+    float currentOffset;           // Kalibrierungs-Offset für Nullpunkt
+    
+    // Energiezähler
+    float consumedMAh;             // Verbrauchte Energie in mAh
+    float consumedWh;              // Verbrauchte Energie in Wh
+    unsigned long lastEnergyUpdate; // Letztes Update für Energieberechnung
+    
+    // Moving Average Filter (Spannung)
+    static const uint8_t VOLTAGE_FILTER_SAMPLES = 10;
+    float voltageBuffer[VOLTAGE_FILTER_SAMPLES];
+    uint8_t voltageBufferIndex;
+    bool voltageBufferFilled;
+    
+    // Moving Average Filter (Strom)
+    static const uint8_t CURRENT_FILTER_SAMPLES = 20;
+    float currentBuffer[CURRENT_FILTER_SAMPLES];
+    uint8_t currentBufferIndex;
+    bool currentBufferFilled;
     
     // Timing
     unsigned long lastUpdateTime;
     unsigned long lastWarningTime;
+    unsigned long lastCurrentWarningTime;
     
     // Status-Flags
-    bool warningActive;            // Warnung wurde ausgegeben
+    bool warningActive;            // Spannungs-Warnung wurde ausgegeben
     bool criticalActive;           // Kritischer Zustand aktiv
+    bool currentWarningActive;     // Strom-Warnung aktiv
     
     // Callbacks
     BatteryWarningCallback warningCallback;
     BatteryShutdownCallback shutdownCallback;
+    CurrentWarningCallback currentWarningCallback;
     
     /**
      * Rohe ADC-Spannung auslesen
      * @return Spannung in Volt
      */
     float readRawVoltage();
+    
+    /**
+     * Rohen ADC-Strom auslesen
+     * @return Strom in Ampere
+     */
+    float readRawCurrent();
     
     /**
      * Spannung filtern (Moving Average)
@@ -146,11 +231,23 @@ private:
     float filterVoltage(float newVoltage);
     
     /**
+     * Strom filtern (Moving Average)
+     * @param newCurrent Neue Messung
+     * @return Gefilterter Strom
+     */
+    float filterCurrent(float newCurrent);
+    
+    /**
      * Spannung in Prozent umrechnen
      * @param voltage Spannung in Volt
      * @return Prozent (0-100)
      */
     uint8_t voltageToPercent(float voltage);
+    
+    /**
+     * Energie-Verbrauch aktualisieren
+     */
+    void updateEnergyConsumption();
     
     /**
      * Warnungen prüfen und ausgeben
