@@ -9,7 +9,7 @@
  * - SD-Karte Reader auf VSPI
  * - Motor-Treiber (L298N/DRV8833)
  * - 4S2P 18650 Li-Ion Akku (mit BMS)
- * - Status-LED
+ * - ACS712-20A Stromsensor (3.3V)
  * 
  * ESP32 Core Version: 3.3.0
  * - PWM Channels werden automatisch verwaltet
@@ -53,30 +53,36 @@
 #define MOTOR_ID_RIGHT      1     // Rechter Motor
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 💡 STATUS-LED PINS
-// ═══════════════════════════════════════════════════════════════════════════
-
-#define LED_STATUS      5     // Status-LED (Connection/Activity)
-#define LED_ERROR       6     // Error-LED (Fehler/Warnung)
-
-// ═══════════════════════════════════════════════════════════════════════════
 // 🔋 SPANNUNGSSENSOR PIN
 // ═══════════════════════════════════════════════════════════════════════════
 
 #define VOLTAGE_SENSOR_PIN  4     // Analog OUT vom Spannungssensor-Modul (GPIO4)
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 🔋 BATTERIE SCHWELLWERTE (4S2P 18650 Li-Ion)
+// ⚡ STROMSENSOR PIN (ACS712-20A bei 3.3V)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#define CURRENT_SENSOR_PIN  5     // Analog OUT vom ACS712-20A (GPIO5)
+
+// ACS712-20A Parameter bei 3.3V Versorgung
+#define CURRENT_ADC_VREF        3.3     // ADC Referenzspannung (3.3V)
+#define CURRENT_ZERO_POINT      1.65    // Nullpunkt bei 3.3V (statt 2.5V bei 5V)
+#define CURRENT_SENSITIVITY     0.066   // 66mV/A bei 3.3V (statt 100mV/A bei 5V)
+#define CURRENT_MAX             20.0    // Maximaler Strom in Ampere
+#define CURRENT_WARNING         15.0    // Warnlimit für hohen Strom in Ampere
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🔋 BATTERIE SCHWELLWERTE (4S Li-Ion)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #define VOLTAGE_RANGE_MAX           25.0  // Modul-Maximum (Hardware-Limit)
-#define VOLTAGE_BATTERY_MIN         12.8  // 4S Li-Ion sicher leer (3.2V/Zelle - max. Lebensdauer!)
+#define VOLTAGE_BATTERY_MIN         12.8  // 4S Li-Ion sicher leer (3.2V/Zelle)
 #define VOLTAGE_BATTERY_MAX         16.8  // 4S Li-Ion voll (4.2V/Zelle)
 #define VOLTAGE_BATTERY_NOM         14.8  // 4S Li-Ion nominal (3.7V/Zelle)
 #define VOLTAGE_ALARM_LOW           13.2  // Warnung bei <13.2V (3.3V/Zelle)
-#define VOLTAGE_SHUTDOWN            12.8  // AUTO-SHUTDOWN bei 12.8V (3.2V/Zelle) ⚠️
-#define VOLTAGE_CALIBRATION_FACTOR  0.7   // Kalibrierungsfaktor (Hardware-abhängig!)
-#define VOLTAGE_CHECK_INTERVAL      1000  // Spannungs-Check alle 1000ms
+#define VOLTAGE_SHUTDOWN            12.8  // AUTO-SHUTDOWN bei 12.8V (3.2V/Zelle)
+#define VOLTAGE_CALIBRATION_FACTOR  0.7   // Kalibrierungsfaktor (Hardware-abhängig)
+#define VOLTAGE_CHECK_INTERVAL      1000  // Spannungs-/Strom-Check alle 1000ms
 
 // HINWEIS: 
 // - Software-Shutdown bei 3.2V/Zelle für maximale Akku-Lebensdauer
@@ -177,11 +183,11 @@ enum ErrorCode {
 #endif
 
 #ifndef ESPNOW_WORKER_PRIORITY
-#define ESPNOW_WORKER_PRIORITY   5      // Worker-Task Priorität (höher = wichtiger)
+#define ESPNOW_WORKER_PRIORITY   5      // Worker-Task Priorität
 #endif
 
 #ifndef ESPNOW_WORKER_CORE
-#define ESPNOW_WORKER_CORE       1      // Core für Worker (0 oder 1, 1 = App-Core)
+#define ESPNOW_WORKER_CORE       1      // Core für Worker (1 = App-Core)
 #endif
 
 // Paket-Größen (ESP-NOW Hardware-Limits)
@@ -193,12 +199,9 @@ enum ErrorCode {
 #define ESPNOW_MAX_DATA_SIZE    248     // Max Nutzdaten (250 - 2 Byte Header)
 #endif
 
-// Internes Hardware-Limit für Peers (ESP-NOW Hardware-Beschränkung)
+// Internes Hardware-Limit für Peers
 #ifndef ESPNOW_MAX_PEERS_LIMIT
 #define ESPNOW_MAX_PEERS_LIMIT  20      // ESP-NOW Hardware-Maximum
 #endif
 
-// ═══════════════════════════════════════════════════════════════════════════
-
-#define FIRMWARE_VERSION "1.0.0"
 #endif // SETUP_CONF_H
