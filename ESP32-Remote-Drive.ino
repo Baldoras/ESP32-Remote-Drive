@@ -1,5 +1,5 @@
 /**
- * ESP32-Remote-Drive.ino
+ * ESP32-Remote-Drive_ino.cpp
  * 
  * Remote-Gegenstelle (Drive) für ESP32-Remote-UI
  * Empfängt Befehle via ESP-NOW und steuert Motoren
@@ -12,8 +12,6 @@
  * - SD-Karte für Logging
  * 
  * ESP32 Core Version: 3.3.0
- * - Verwendet neue ledcAttach() API (statt ledcSetup/ledcAttachPin)
- * - ledcWrite() verwendet Pin direkt (kein Channel mehr)
  */
 
 #include <WiFi.h>
@@ -23,7 +21,7 @@
 #include "include/UserConfig.h"
 #include "include/SerialCommandHandler.h"
 #include "include/PowerManager.h"
-#include "include/ESPNowManager.h"
+#include "include/ESPNowRemoteController.h"
 #include "include/BatteryMonitor.h"
 #include "include/MotorController.h"
 #include "include/setupConf.h"
@@ -63,8 +61,6 @@ void setup() {
     Serial.println("═══════════════════════════════════════════════════════");
     Serial.println("System Ready!");
     Serial.println("═══════════════════════════════════════════════════════");
-    
-    blinkStatusLED(3);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -75,7 +71,7 @@ void loop() {
     // Serial Commands verarbeiten
     serialCmd.update();
     
-    // ESP-NOW Update (prüft Heartbeat/Timeouts, triggert Events)
+    // ESP-NOW Update (prüft Heartbeat/Timeouts, verarbeitet RX-Queue)
     espNow.update();
     
     // Batterie-Status prüfen
@@ -88,23 +84,15 @@ void loop() {
     if (remoteConnected && (millis() - lastRemoteActivity > 2000)) {
         remoteConnected = false;
         motorCtrl.stop();
-        setErrorLED(true);
         logger.warning("CONNECTION", "Remote connection timeout");
     }
     
     // Periodisch Telemetrie senden (alle 500ms)
-    static unsigned long lastTelemetry = 0;
+    /*static unsigned long lastTelemetry = 0;
     if (remoteConnected && (millis() - lastTelemetry > 500)) {
         sendTelemetry();
         lastTelemetry = millis();
-    }
-    
-    // Status-LED blinken wenn verbunden
-    static unsigned long lastBlink = 0;
-    if (remoteConnected && (millis() - lastBlink > 1000)) {
-        setStatusLED(!digitalRead(LED_STATUS));
-        lastBlink = millis();
-    }
+    }*/
     
     delay(10);
 }
@@ -115,15 +103,6 @@ void loop() {
 
 bool initializeSystem() {
     Serial.println("\n[INIT] Starting system initialization...");
-    
-    // ─────────────────────────────────────────────────────────────────────
-    // LED-Pins initialisieren
-    // ─────────────────────────────────────────────────────────────────────
-    Serial.println("[INIT] Initializing LEDs...");
-    pinMode(LED_STATUS, OUTPUT);
-    pinMode(LED_ERROR, OUTPUT);
-    setStatusLED(false);
-    setErrorLED(false);
     
     // ─────────────────────────────────────────────────────────────────────
     // SD-Card initialisieren
@@ -162,6 +141,31 @@ bool initializeSystem() {
         logger.info("BOOT", "Using default config");
         userConfig.reset();
     }
+    
+    // ─────────────────────────────────────────────────────────────────────
+    // WiFi initialisieren (für ESP-NOW erforderlich!)
+    // ─────────────────────────────────────────────────────────────────────
+    Serial.println("[INIT] Initializing WiFi for ESP-NOW...");
+    
+    // WiFi in Station-Modus setzen
+    WiFi.mode(WIFI_STA);
+    
+    // WiFi-Verbindung trennen (keine AP-Verbindung nötig)
+    WiFi.disconnect();
+    
+    // Optional: WiFi-Kanal setzen (falls in Config angegeben)
+    uint8_t wifiChannel = userConfig.getEspnowChannel();
+    if (wifiChannel > 0 && wifiChannel <= 14) {
+        esp_wifi_set_channel(wifiChannel, WIFI_SECOND_CHAN_NONE);
+        Serial.printf("  WiFi Channel: %d (from config)\n", wifiChannel);
+    } else {
+        Serial.println("  WiFi Channel: Auto (0 in config)");
+    }
+    
+    Serial.println("  ✅ WiFi ready for ESP-NOW");
+    Serial.printf("  MAC: %s\n", WiFi.macAddress().c_str());
+    Serial.printf("  Mode: %s\n", WiFi.getMode() == WIFI_STA ? "STA" : "OTHER");
+    Serial.printf("  Channel: %d\n", WiFi.channel());
     
     // ─────────────────────────────────────────────────────────────────────
     // Battery Monitor initialisieren
@@ -204,19 +208,20 @@ bool initializeSystem() {
     Serial.println("  ✅ Motor Controller OK");
     
     // ─────────────────────────────────────────────────────────────────────
-    // ESP-NOW initialisieren
+    // ESP-NOW Remote Controller initialisieren
     // ─────────────────────────────────────────────────────────────────────
-    Serial.println("[INIT] Initializing ESP-NOW...");
+    Serial.println("[INIT] Initializing ESP-NOW Remote Controller...");
     
     if (!espNow.begin(userConfig.getEspnowChannel())) {
         Serial.println("  ❌ ESP-NOW init failed!");
         logger.error("BOOT", "ESP-NOW init failed");
-        setErrorLED(true);
         return false;
     }
     
-    Serial.println("  ✅ ESP-NOW OK");
+    Serial.println("  ✅ ESP-NOW Remote Controller OK");
     Serial.printf("  MAC: %s\n", espNow.getOwnMacString().c_str());
+    Serial.printf("  WiFi Channel: %d\n", WiFi.channel());
+    Serial.printf("  Expected Master MAC: %s\n", userConfig.getEspnowPeerMac());
     
     // Konfiguration anwenden
     espNow.setHeartbeat(true, userConfig.getEspnowHeartbeat());
@@ -229,29 +234,59 @@ bool initializeSystem() {
     
     logger.logf(LOG_INFO, "BOOT", "ESP-NOW: MAC=%s", espNow.getOwnMacString().c_str());
     
-    // Event-Callbacks für Logging registrieren
+    // ─────────────────────────────────────────────────────────────────────
+    // ESP-NOW Callbacks registrieren
+    // ─────────────────────────────────────────────────────────────────────
+    
+    // Event-Callbacks für Logging
     espNow.onEvent(ESPNowEvent::PEER_CONNECTED, [](ESPNowEventData* data) {
-        String mac = ESPNowManager::macToString(data->mac);
+        String mac = ESPNowRemoteController::macToString(data->mac);
         logger.logConnection(mac.c_str(), "connected");
-        Serial.printf("[ESP-NOW] Peer %s connected\n", mac.c_str());
+        Serial.printf("[ESP-NOW] ✅ Peer %s connected\n", mac.c_str());
+        
+        remoteConnected = true;
+        lastRemoteActivity = millis();
     });
     
     espNow.onEvent(ESPNowEvent::PEER_DISCONNECTED, [](ESPNowEventData* data) {
-        String mac = ESPNowManager::macToString(data->mac);
+        String mac = ESPNowRemoteController::macToString(data->mac);
         logger.logConnection(mac.c_str(), "disconnected");
-        Serial.printf("[ESP-NOW] Peer %s disconnected\n", mac.c_str());
+        Serial.printf("[ESP-NOW] ❌ Peer %s disconnected\n", mac.c_str());
+        
+        remoteConnected = false;
+        motorCtrl.stop();
     });
     
     espNow.onEvent(ESPNowEvent::HEARTBEAT_TIMEOUT, [](ESPNowEventData* data) {
-        String mac = ESPNowManager::macToString(data->mac);
+        String mac = ESPNowRemoteController::macToString(data->mac);
         logger.logConnection(mac.c_str(), "timeout");
-        Serial.printf("[ESP-NOW] Peer %s timeout\n", mac.c_str());
+        Serial.printf("[ESP-NOW] ⚠️ Peer %s timeout\n", mac.c_str());
     });
     
-    // Receive-Callback für empfangene Daten setzen
-    espNow.setReceiveCallback([](const uint8_t* mac, ESPNowPacket& packet) {
-        onESPNowDataReceived(mac, packet.getMainCmd(), &packet);
+    // DATA_RECEIVED Event für Debug
+    espNow.onEvent(ESPNowEvent::DATA_RECEIVED, [](ESPNowEventData* data) {
+        String mac = ESPNowRemoteController::macToString(data->mac);
+        Serial.printf("[ESP-NOW] DATA_RECEIVED from %s\n", mac.c_str());
     });
+    
+    // Joystick-Callback (High-Level)
+    /*espNow.setJoystickCallback([](const uint8_t* mac, const JoystickData& data) {
+        // Joystick-Daten an MotorController weiterleiten
+        // Skalierung: JoystickData ist -32768 bis +32767, wir brauchen -100 bis +100
+        motorCtrl.processMovementInput((int8_t)(data.x / 327), (int8_t)(data.y / 327));
+        
+        lastRemoteActivity = millis();
+        
+        // Debug-Ausgabe (max 1x pro Sekunde)
+        static unsigned long lastJoyDebug = 0;
+        if (millis() - lastJoyDebug >= 1000) {
+            Serial.printf("[JOYSTICK] X=%d Y=%d Btn=%d\n", data.x, data.y, data.button);
+            lastJoyDebug = millis();
+        }
+        
+        logger.logf(LOG_DEBUG, "MOTOR", "Joystick: X=%d Y=%d Btn=%d", 
+                   data.x, data.y, data.button);
+    });*/
     
     // ─────────────────────────────────────────────────────────────────────
     // Serial Command Handler initialisieren
@@ -280,108 +315,31 @@ void shutdownSystem() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// LED-STEUERUNG
-// ═══════════════════════════════════════════════════════════════════════════
-
-void setStatusLED(bool state) {
-    digitalWrite(LED_STATUS, state ? HIGH : LOW);
-}
-
-void setErrorLED(bool state) {
-    digitalWrite(LED_ERROR, state ? HIGH : LOW);
-}
-
-void blinkStatusLED(int times) {
-    for (int i = 0; i < times; i++) {
-        setStatusLED(true);
-        delay(100);
-        setStatusLED(false);
-        delay(100);
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// ESP-NOW CALLBACKS
-// ═══════════════════════════════════════════════════════════════════════════
-
-void onESPNowDataReceived(const uint8_t* mac, MainCmd cmd, ESPNowPacket* packet) {
-    lastRemoteActivity = millis();
-    
-    // Verbindung herstellen
-    if (!remoteConnected) {
-        remoteConnected = true;
-        setErrorLED(false);
-        logger.info("CONNECTION", "Remote connected");
-    }
-    
-    // Command verarbeiten
-    switch (cmd) {
-        case MainCmd::HEARTBEAT:
-            lastHeartbeat = millis();
-            break;
-            
-        case MainCmd::DATA_REQUEST:
-        case MainCmd::USER_START:
-            // Joystick-Daten verarbeiten (falls vorhanden)
-            if (packet->has(DataCmd::JOYSTICK_X) && packet->has(DataCmd::JOYSTICK_Y)) {
-                int16_t joyX, joyY;
-                if (packet->getInt16(DataCmd::JOYSTICK_X, joyX) && 
-                    packet->getInt16(DataCmd::JOYSTICK_Y, joyY)) {
-                    
-                    // MotorController verarbeitet die Joystick-Eingabe mit Differential Steering
-                    motorCtrl.processMovementInput((int8_t)joyX, (int8_t)joyY);
-                    
-                    logger.logf(LOG_DEBUG, "MOTOR", "Joystick: X=%d Y=%d", joyX, joyY);
-                }
-            }
-            break;
-            
-        default:
-            break;
-    }
-}
-
-void onESPNowConnectionChanged(bool connected) {
-    remoteConnected = connected;
-    
-    if (!connected) {
-        motorCtrl.stop();
-        setErrorLED(true);
-        logger.warning("CONNECTION", "Remote disconnected");
-    } else {
-        setErrorLED(false);
-        logger.info("CONNECTION", "Remote connected");
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // TELEMETRIE SENDEN
 // ═══════════════════════════════════════════════════════════════════════════
 
-void sendTelemetry() {
-    // Paket erstellen mit Builder-Pattern
-    ESPNowPacket packet;
+/*void sendTelemetry() {
+    // Telemetrie-Daten zusammenstellen
+    TelemetryData telemetry;
+    telemetry.batteryVoltage = (uint16_t)(battery.getVoltage() * 1000); // mV
+    telemetry.batteryPercent = battery.getPercent();
+    telemetry.temperature = 0;  // TODO: Temperature sensor
+    telemetry.rssi = WiFi.RSSI();
+    
+    // Motor-Telemetrie als RemoteESPNowPacket
+    RemoteESPNowPacket packet;
     packet.begin(MainCmd::DATA_RESPONSE);
+    packet.addTelemetry(telemetry);
     
-    // Batterie-Daten
-    uint16_t voltage = (uint16_t)(battery.getVoltage() * 1000); // mV
-    uint8_t percent = battery.getPercent();
-    packet.addUInt16(DataCmd::BATTERY_VOLTAGE, voltage);
-    packet.addByte(DataCmd::BATTERY_PERCENT, percent);
-    
-    // Motor-Telemetrie
+    // Motor-Status
     MotorTelemetry motorTel = motorCtrl.getTelemetry();
-    packet.addInt8(DataCmd::MOTOR_LEFT, motorTel.leftSpeed);
-    packet.addInt8(DataCmd::MOTOR_RIGHT, motorTel.rightSpeed);
-    
-    // RSSI
-    int8_t rssi = WiFi.RSSI();
-    packet.addInt8(DataCmd::RSSI, rssi);
+    packet.addMotors(motorTel.leftSpeed, motorTel.rightSpeed);
     
     // Verbindungsstatus
     uint8_t connectionStatus = remoteConnected ? 1 : 0;
-    packet.addByte(DataCmd::CONNECTION, connectionStatus);
+    packet.add(static_cast<DataCmd>(static_cast<uint8_t>(RemoteDataCmd::CONNECTION)), 
+               &connectionStatus, 1);
     
     // An alle Peers senden (Broadcast)
     espNow.broadcast(packet);
-}
+}*/

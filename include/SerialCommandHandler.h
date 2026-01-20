@@ -30,7 +30,7 @@
 #include "SDCardHandler.h"
 #include "LogHandler.h"
 #include "BatteryMonitor.h"
-#include "ESPNowManager.h"
+#include "ESPNowRemoteController.h"
 #include "UserConfig.h"
 #include "Globals.h"
 
@@ -46,13 +46,13 @@ public:
      * @param sdHandler Pointer zum SDCardHandler
      * @param logger Pointer zum LogHandler
      * @param battery Pointer zum BatteryMonitor (optional)
-     * @param espNow Pointer zum ESPNowManager (optional)
+     * @param espNow Pointer zum ESPNowRemoteController (optional)
      * @param config Pointer zum UserConfig (optional)
      */
     void begin(SDCardHandler* sdHandler, 
                LogHandler* logger,
                BatteryMonitor* battery = nullptr,
-               ESPNowManager* espNow = nullptr,
+               ESPNowRemoteController* espNow = nullptr,
                UserConfig* config = nullptr);
 
     /**
@@ -71,7 +71,7 @@ private:
     SDCardHandler* sdHandler;
     LogHandler* logger;
     BatteryMonitor* battery;
-    ESPNowManager* espNow;
+    ESPNowRemoteController* espNow;
     UserConfig* config;
 
     String inputBuffer;  // Buffer für eingehende Zeichen

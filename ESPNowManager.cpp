@@ -9,290 +9,8 @@
 #include "include/ESPNowManager.h"
 #include <esp_wifi.h>
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ESPNOWPACKET - BUILDER & PARSER
-// ═══════════════════════════════════════════════════════════════════════════
-
-ESPNowPacket::ESPNowPacket()
-    : entryCount(0)
-    , mainCmd(MainCmd::NONE)
-    , dataLength(0)
-    , writePos(2)  // Nach Header starten
-    , valid(false)
-{
-    memset(buffer, 0, ESPNOW_MAX_PACKET_SIZE);
-    memset(entries, 0, sizeof(entries));
-}
-
-ESPNowPacket::~ESPNowPacket() {
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// BUILDER
-// ─────────────────────────────────────────────────────────────────────────────
-
-ESPNowPacket& ESPNowPacket::begin(MainCmd cmd) {
-    clear();
-    mainCmd = cmd;
-    buffer[0] = static_cast<uint8_t>(cmd);
-    buffer[1] = 0;  // Total length (wird am Ende aktualisiert)
-    writePos = 2;
-    dataLength = 0;
-    valid = true;
-    return *this;
-}
-
-ESPNowPacket& ESPNowPacket::add(DataCmd dataCmd, const void* data, size_t len) {
-    if (!valid) return *this;
-    
-    // Prüfen ob noch Platz
-    // Benötigt: 2 Byte (SUB_CMD + LEN) + Daten
-    if (writePos + 2 + len > ESPNOW_MAX_PACKET_SIZE) {
-        DEBUG_PRINTLN("ESPNowPacket: ❌ Kein Platz mehr im Paket!");
-        return *this;
-    }
-    
-    // Prüfen ob noch Einträge frei
-    if (entryCount >= MAX_ENTRIES) {
-        DEBUG_PRINTLN("ESPNowPacket: ❌ Maximale Einträge erreicht!");
-        return *this;
-    }
-    
-    // Sub-CMD schreiben
-    buffer[writePos++] = static_cast<uint8_t>(dataCmd);
-    
-    // Länge schreiben
-    buffer[writePos++] = static_cast<uint8_t>(len);
-    
-    // Daten kopieren
-    if (data && len > 0) {
-        memcpy(&buffer[writePos], data, len);
-    }
-    
-    // Entry speichern (für Parser)
-    entries[entryCount].cmd = dataCmd;
-    entries[entryCount].offset = writePos - 2;  // Position im Buffer
-    entries[entryCount].length = len;
-    entryCount++;
-    
-    writePos += len;
-    dataLength = writePos - 2;
-    
-    // Total length im Header aktualisieren
-    buffer[1] = static_cast<uint8_t>(dataLength);
-    
-    return *this;
-}
-
-ESPNowPacket& ESPNowPacket::addByte(DataCmd dataCmd, uint8_t value) {
-    return add(dataCmd, &value, 1);
-}
-
-ESPNowPacket& ESPNowPacket::addInt8(DataCmd dataCmd, int8_t value) {
-    return add(dataCmd, &value, 1);
-}
-
-ESPNowPacket& ESPNowPacket::addUInt16(DataCmd dataCmd, uint16_t value) {
-    return add(dataCmd, &value, 2);
-}
-
-ESPNowPacket& ESPNowPacket::addInt16(DataCmd dataCmd, int16_t value) {
-    return add(dataCmd, &value, 2);
-}
-
-ESPNowPacket& ESPNowPacket::addUInt32(DataCmd dataCmd, uint32_t value) {
-    return add(dataCmd, &value, 4);
-}
-
-ESPNowPacket& ESPNowPacket::addInt32(DataCmd dataCmd, int32_t value) {
-    return add(dataCmd, &value, 4);
-}
-
-ESPNowPacket& ESPNowPacket::addFloat(DataCmd dataCmd, float value) {
-    return add(dataCmd, &value, 4);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PARSER
-// ─────────────────────────────────────────────────────────────────────────────
-
-bool ESPNowPacket::parse(const uint8_t* rawData, size_t len) {
-    clear();
-    
-    // Mindestlänge prüfen (MAIN_CMD + TOTAL_LEN)
-    if (!rawData || len < 2) {
-        DEBUG_PRINTLN("ESPNowPacket: ❌ Paket zu klein");
-        return false;
-    }
-    
-    // Header lesen
-    mainCmd = static_cast<MainCmd>(rawData[0]);
-    uint8_t totalLen = rawData[1];
-    
-    // Längenprüfung
-    if (totalLen > len - 2) {
-        DEBUG_PRINTF("ESPNowPacket: ❌ Ungültige Länge: %d > %d\n", totalLen, len - 2);
-        return false;
-    }
-    
-    // Buffer kopieren
-    memcpy(buffer, rawData, len);
-    dataLength = totalLen;
-    
-    // Sub-Einträge parsen
-    size_t pos = 2;  // Nach Header
-    while (pos + 2 <= 2 + totalLen) {
-        // Sub-CMD und Länge lesen
-        DataCmd subCmd = static_cast<DataCmd>(buffer[pos]);
-        uint8_t subLen = buffer[pos + 1];
-        
-        // Prüfen ob Daten noch im Paket
-        if (pos + 2 + subLen > 2 + totalLen) {
-            DEBUG_PRINTLN("ESPNowPacket: ⚠️ Truncated sub-entry");
-            break;
-        }
-        
-        // Entry speichern
-        if (entryCount < MAX_ENTRIES) {
-            entries[entryCount].cmd = subCmd;
-            entries[entryCount].offset = pos;  // Position im Buffer
-            entries[entryCount].length = subLen;
-            entryCount++;
-        }
-        
-        pos += 2 + subLen;
-    }
-    
-    valid = true;
-    return true;
-}
-
-bool ESPNowPacket::has(DataCmd dataCmd) const {
-    return findEntry(dataCmd) >= 0;
-}
-
-const uint8_t* ESPNowPacket::getData(DataCmd dataCmd, size_t* outLen) const {
-    int idx = findEntry(dataCmd);
-    if (idx < 0) {
-        if (outLen) *outLen = 0;
-        return nullptr;
-    }
-    
-    if (outLen) *outLen = entries[idx].length;
-    
-    // Daten beginnen 2 Bytes nach Offset (nach SUB_CMD + LEN)
-    return &buffer[entries[idx].offset + 2];
-}
-
-bool ESPNowPacket::getByte(DataCmd dataCmd, uint8_t& outValue) const {
-    const uint8_t* data = get<uint8_t>(dataCmd);
-    if (data) {
-        outValue = *data;
-        return true;
-    }
-    return false;
-}
-
-bool ESPNowPacket::getInt8(DataCmd dataCmd, int8_t& outValue) const {
-    const int8_t* data = get<int8_t>(dataCmd);
-    if (data) {
-        outValue = *data;
-        return true;
-    }
-    return false;
-}
-
-bool ESPNowPacket::getUInt16(DataCmd dataCmd, uint16_t& outValue) const {
-    const uint16_t* data = get<uint16_t>(dataCmd);
-    if (data) {
-        outValue = *data;
-        return true;
-    }
-    return false;
-}
-
-bool ESPNowPacket::getInt16(DataCmd dataCmd, int16_t& outValue) const {
-    const int16_t* data = get<int16_t>(dataCmd);
-    if (data) {
-        outValue = *data;
-        return true;
-    }
-    return false;
-}
-
-bool ESPNowPacket::getUInt32(DataCmd dataCmd, uint32_t& outValue) const {
-    const uint32_t* data = get<uint32_t>(dataCmd);
-    if (data) {
-        outValue = *data;
-        return true;
-    }
-    return false;
-}
-
-bool ESPNowPacket::getInt32(DataCmd dataCmd, int32_t& outValue) const {
-    const int32_t* data = get<int32_t>(dataCmd);
-    if (data) {
-        outValue = *data;
-        return true;
-    }
-    return false;
-}
-
-bool ESPNowPacket::getFloat(DataCmd dataCmd, float& outValue) const {
-    const float* data = get<float>(dataCmd);
-    if (data) {
-        outValue = *data;
-        return true;
-    }
-    return false;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPER
-// ─────────────────────────────────────────────────────────────────────────────
-
-void ESPNowPacket::clear() {
-    memset(buffer, 0, ESPNOW_MAX_PACKET_SIZE);
-    memset(entries, 0, sizeof(entries));
-    entryCount = 0;
-    mainCmd = MainCmd::NONE;
-    dataLength = 0;
-    writePos = 2;
-    valid = false;
-}
-
-int ESPNowPacket::findEntry(DataCmd cmd) const {
-    for (int i = 0; i < entryCount; i++) {
-        if (entries[i].cmd == cmd) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-void ESPNowPacket::print() const {
-    DEBUG_PRINTLN("\n─── ESPNowPacket ───────────────────────────");
-    DEBUG_PRINTF("MainCmd:    0x%02X\n", static_cast<uint8_t>(mainCmd));
-    DEBUG_PRINTF("DataLength: %d\n", dataLength);
-    DEBUG_PRINTF("Entries:    %d\n", entryCount);
-    DEBUG_PRINTF("Valid:      %s\n", valid ? "YES" : "NO");
-    
-    for (int i = 0; i < entryCount; i++) {
-        DEBUG_PRINTF("  [%d] DataCmd=0x%02X, Len=%d, Offset=%d\n", 
-                     i, 
-                     static_cast<uint8_t>(entries[i].cmd),
-                     entries[i].length,
-                     entries[i].offset);
-    }
-    
-    // Hex-Dump
-    DEBUG_PRINT("Raw: ");
-    for (size_t i = 0; i < getTotalLength() && i < 32; i++) {
-        DEBUG_PRINTF("%02X ", buffer[i]);
-    }
-    if (getTotalLength() > 32) DEBUG_PRINT("...");
-    DEBUG_PRINTLN("\n────────────────────────────────────────────");
-}
+// Statischer Instance-Pointer
+ESPNowManager* ESPNowManager::instance = nullptr;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ESPNOWMANAGER - HAUPTKLASSE
@@ -325,6 +43,8 @@ ESPNowManager::~ESPNowManager() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 bool ESPNowManager::begin(uint8_t channel) {
+    Serial.println("\n[ESPNowManager::begin] START");
+
     if (initialized) {
         DEBUG_PRINTLN("ESPNowManager: Bereits initialisiert");
         return true;
@@ -375,13 +95,19 @@ bool ESPNowManager::begin(uint8_t channel) {
 
     // Callbacks registrieren
     esp_now_register_recv_cb(onDataRecvStatic);
+    Serial.println("[begin] ✅ Receive callback registered");
     esp_now_register_send_cb(onDataSentStatic);
+    Serial.println("[begin] ✅ Send callback registered");
+
+    instance = this;
+    Serial.printf("[begin] Instance pointer set: %p\n", instance);
 
     initialized = true;
 
     DEBUG_PRINTLN("ESPNowManager: ✅ ESP-NOW initialisiert (OHNE Worker-Thread)");
     DEBUG_PRINTF("ESPNowManager: MAC: %s, Kanal: %d\n", getOwnMacString().c_str(), wifiChannel);
 
+    Serial.println("\n[ESPNowManager::begin] END");
     return true;
 }
 
@@ -571,6 +297,7 @@ bool ESPNowManager::isPeerConnected(const uint8_t* mac) {
 bool ESPNowManager::send(const uint8_t* mac, const ESPNowPacket& packet) {
     if (!initialized) {
         DEBUG_PRINTLN("ESPNowManager: ❌ Nicht initialisiert!");
+        
         return false;
     }
 
@@ -719,10 +446,10 @@ void ESPNowManager::triggerEvent(ESPNowEvent event, ESPNowEventData* data) {
 // STATISCHE ESP-NOW CALLBACKS (minimal - nur Queue!)
 // ═══════════════════════════════════════════════════════════════════════════
 
-void ESPNowManager::onDataRecvStatic(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
-    extern ESPNowManager espNow;
+/*void ESPNowManager::onDataRecvStatic(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
+    if (!instance) return;
     
-    if (!espNow.rxQueue || !info || !data || len <= 0) return;
+    if (!instance->rxQueue || !info || !data || len <= 0) return;
     
     // Direkt in Queue schieben (im WiFi-ISR-Kontext!)
     RxQueueItem item;
@@ -732,80 +459,105 @@ void ESPNowManager::onDataRecvStatic(const esp_now_recv_info_t* info, const uint
     item.timestamp = millis();
     
     // Non-blocking, von ISR aus
-    xQueueSendFromISR(espNow.rxQueue, &item, nullptr);
+    xQueueSendFromISR(instance->rxQueue, &item, nullptr);
+}*/
+
+void ESPNowManager::onDataRecvStatic(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
+    // ⭐ WICHTIG: Dieser Callback läuft im WiFi-ISR Kontext!
+    // Nur minimale Verarbeitung, dann in Queue schieben!
+    
+    Serial.println("\n╔════════════════════════════════════════╗");
+    Serial.println("║  onDataRecvStatic CALLED!!!            ║");
+    Serial.println("╚════════════════════════════════════════╝");
+    
+    // Instance-Pointer prüfen
+    if (!instance) {
+        Serial.println("  ❌ instance is NULL!");
+        return;
+    }
+    
+    Serial.println("  ✅ instance OK");
+    
+    // Parameter prüfen
+    if (!info) {
+        Serial.println("  ❌ info is NULL!");
+        return;
+    }
+    
+    if (!data) {
+        Serial.println("  ❌ data is NULL!");
+        return;
+    }
+    
+    if (len <= 0) {
+        Serial.printf("  ❌ len is invalid: %d\n", len);
+        return;
+    }
+    
+    Serial.printf("  ✅ Parameters OK (len=%d)\n", len);
+    
+    // Queue prüfen
+    if (!instance->rxQueue) {
+        Serial.println("  ❌ rxQueue is NULL!");
+        return;
+    }
+    
+    Serial.println("  ✅ rxQueue OK");
+    
+    // MAC ausgeben
+    Serial.printf("  From: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                 info->src_addr[0], info->src_addr[1], info->src_addr[2],
+                 info->src_addr[3], info->src_addr[4], info->src_addr[5]);
+    
+    // Daten als Hex ausgeben (erste 20 Bytes)
+    Serial.print("  Data: ");
+    for (int i = 0; i < min(len, 20); i++) {
+        Serial.printf("%02X ", data[i]);
+    }
+    Serial.println();
+    
+    // Item erstellen
+    RxQueueItem item;
+    memcpy(item.mac, info->src_addr, 6);
+    memcpy(item.data, data, len);
+    item.length = len;
+    item.timestamp = millis();
+    
+    Serial.println("  Item prepared, adding to queue...");
+    
+    // In Queue schieben (non-blocking, von ISR aus)
+    BaseType_t result = xQueueSendFromISR(instance->rxQueue, &item, nullptr);
+    
+    if (result == pdTRUE) {
+        int pending = uxQueueMessagesWaiting(instance->rxQueue);
+        Serial.printf("  ✅ Added to queue! Pending: %d\n", pending);
+    } else {
+        Serial.println("  ❌ Queue FULL or error!");
+    }
+    
+    Serial.println("════════════════════════════════════════\n");
 }
 
-void ESPNowManager::onDataSentStatic(const wifi_tx_info_t* tx_info, esp_now_send_status_t status) {
-    extern ESPNowManager espNow;
+/*void ESPNowManager::onDataSentStatic(const wifi_tx_info_t* tx_info, esp_now_send_status_t status) {
+    if (!instance) return;
     
     // tx_info enthält MAC-Adresse nicht direkt - verwende nullptr
-    espNow.handleSendStatus(nullptr, status == ESP_NOW_SEND_SUCCESS);
-}
+    instance->handleSendStatus(nullptr, status == ESP_NOW_SEND_SUCCESS);
+}*/
 
-// ═══════════════════════════════════════════════════════════════════════════
-// RX-QUEUE VERARBEITUNG (im Main-Thread via update())
-// ═══════════════════════════════════════════════════════════════════════════
-
-void ESPNowManager::processRxQueue() {
-    RxQueueItem rxItem;
-    
-    // Alle verfügbaren RX-Items verarbeiten
-    while (xQueueReceive(rxQueue, &rxItem, 0) == pdTRUE) {
-        
-        // Paket parsen
-        ESPNowPacket packet;
-        if (!packet.parse(rxItem.data, rxItem.length)) {
-            DEBUG_PRINTLN("ESPNowManager: ⚠️ Paket-Parse fehlgeschlagen");
-            continue;
-        }
-        
-        // Peer aktualisieren (mit Mutex)
-        bool wasDisconnected = false;
-        if (xSemaphoreTake(peersMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            int index = findPeerIndex(rxItem.mac);
-            if (index >= 0) {
-                wasDisconnected = !peers[index].connected;
-                peers[index].connected = true;
-                peers[index].lastSeen = rxItem.timestamp;
-                peers[index].packetsReceived++;
-            }
-            xSemaphoreGive(peersMutex);
-        }
-        
-        // Connected-Event triggern (außerhalb Mutex!)
-        if (wasDisconnected) {
-            DEBUG_PRINTF("ESPNowManager: ✅ Peer %s verbunden\n", macToString(rxItem.mac).c_str());
-            
-            ESPNowEventData eventData = {};
-            eventData.event = ESPNowEvent::PEER_CONNECTED;
-            memcpy(eventData.mac, rxItem.mac, 6);
-            triggerEvent(ESPNowEvent::PEER_CONNECTED, &eventData);
-        }
-        
-        // Nach MainCmd verarbeiten
-        MainCmd cmd = packet.getMainCmd();
-        
-        if (cmd == MainCmd::HEARTBEAT) {
-            // Heartbeat-Event
-            ESPNowEventData eventData = {};
-            eventData.event = ESPNowEvent::HEARTBEAT_RECEIVED;
-            memcpy(eventData.mac, rxItem.mac, 6);
-            triggerEvent(ESPNowEvent::HEARTBEAT_RECEIVED, &eventData);
-            continue;
-        }
-        
-        // User-Callback
-        if (receiveCallback) {
-            receiveCallback(rxItem.mac, packet);
-        }
-        
-        // Data-Received Event
-        ESPNowEventData eventData = {};
-        eventData.event = ESPNowEvent::DATA_RECEIVED;
-        memcpy(eventData.mac, rxItem.mac, 6);
-        eventData.packet = &packet;
-        triggerEvent(ESPNowEvent::DATA_RECEIVED, &eventData);
+void ESPNowManager::onDataSentStatic(const wifi_tx_info_t* tx_info, esp_now_send_status_t status) {
+    // Instance-Pointer prüfen
+    if (!instance) {
+        Serial.println("[onDataSentStatic] ❌ instance is NULL!");
+        return;
     }
+    
+    // Status ausgeben
+    Serial.printf("[onDataSentStatic] Status: %s\n", 
+                 status == ESP_NOW_SEND_SUCCESS ? "SUCCESS" : "FAILED");
+    
+    // tx_info enthält MAC-Adresse nicht direkt - verwende nullptr
+    instance->handleSendStatus(nullptr, status == ESP_NOW_SEND_SUCCESS);
 }
 
 void ESPNowManager::handleSendStatus(const uint8_t* mac, bool success) {
@@ -847,21 +599,124 @@ void ESPNowManager::handleSendStatus(const uint8_t* mac, bool success) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 void ESPNowManager::update() {
-    if (!initialized) return;
+if (!initialized) {
+        Serial.println("[ESPNowManager::update] ❌ NOT INITIALIZED");
+        return;
+    }
 
-    unsigned long now = millis();
+    // Debug-Ausgabe alle 5 Sekunden
+    /*static unsigned long lastDebug = 0;
+    if (millis() - lastDebug >= 5000) {
+        Serial.println("[ESPNowManager::update] Called");
+        Serial.printf("  initialized=%d\n", initialized);
+        Serial.printf("  rxQueue=%p\n", rxQueue);
+        if (rxQueue) {
+            Serial.printf("  Queue pending: %d\n", uxQueueMessagesWaiting(rxQueue));
+        }
+        lastDebug = millis();
+    }*/
+
+    //unsigned long now = millis();
 
     // Heartbeat senden
-    if (heartbeatEnabled && (now - lastHeartbeatSent) >= heartbeatInterval) {
+    /*if (heartbeatEnabled && (now - lastHeartbeatSent) >= heartbeatInterval) {
+        Serial.println("[ESPNowManager::update] Sending heartbeat...");
         sendHeartbeat();
         lastHeartbeatSent = now;
-    }
+    }*/
 
     // Timeouts prüfen
     checkTimeouts();
     
     // RX-Queue verarbeiten
     processRxQueue();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RX-QUEUE VERARBEITUNG (im Main-Thread via update())
+// ═══════════════════════════════════════════════════════════════════════════
+
+void ESPNowManager::processRxQueue() {
+    Serial.println("\n[ESPNowManager::processRxQueue] BASE CLASS CALLED!");
+    Serial.println("⚠️  This should NOT be called - override should be used!");
+    
+    if (!rxQueue) {
+        Serial.println("  rxQueue is NULL!");
+        return;
+    }
+    
+    RxQueueItem rxItem;
+    
+    // Alle verfügbaren RX-Items verarbeiten
+    int processed = 0;
+    while (xQueueReceive(rxQueue, &rxItem, 0) == pdTRUE) {
+        processed++;
+        
+        Serial.printf("\n[RX-BASE] Packet #%d\n", processed);
+        Serial.printf("  MAC: %s\n", macToString(rxItem.mac).c_str());
+        Serial.printf("  Length: %d\n", rxItem.length);
+        
+        // Paket parsen
+        ESPNowPacket packet;
+        if (!packet.parse(rxItem.data, rxItem.length)) {
+            Serial.println("  Parse FAILED!");
+            continue;
+        }
+        
+        Serial.println("  Parse SUCCESS");
+        
+        // Peer aktualisieren (mit Mutex)
+        bool wasDisconnected = false;
+        if (xSemaphoreTake(peersMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            int index = findPeerIndex(rxItem.mac);
+            if (index >= 0) {
+                wasDisconnected = !peers[index].connected;
+                peers[index].connected = true;
+                peers[index].lastSeen = rxItem.timestamp;
+                peers[index].packetsReceived++;
+            }
+            xSemaphoreGive(peersMutex);
+        }
+        
+        // Connected-Event triggern (außerhalb Mutex!)
+        if (wasDisconnected) {
+            Serial.printf("  Triggering CONNECTED event\n");
+            
+            ESPNowEventData eventData = {};
+            eventData.event = ESPNowEvent::PEER_CONNECTED;
+            memcpy(eventData.mac, rxItem.mac, 6);
+            triggerEvent(ESPNowEvent::PEER_CONNECTED, &eventData);
+        }
+        
+        // Nach MainCmd verarbeiten
+        MainCmd cmd = packet.getMainCmd();
+        Serial.printf("  MainCmd: 0x%02X\n", static_cast<uint8_t>(cmd));
+        
+        if (cmd == MainCmd::HEARTBEAT) {
+            // Heartbeat-Event
+            ESPNowEventData eventData = {};
+            eventData.event = ESPNowEvent::HEARTBEAT_RECEIVED;
+            memcpy(eventData.mac, rxItem.mac, 6);
+            triggerEvent(ESPNowEvent::HEARTBEAT_RECEIVED, &eventData);
+            continue;
+        }
+        
+        // User-Callback
+        if (receiveCallback) {
+            receiveCallback(rxItem.mac, packet);
+        }
+        
+        // Data-Received Event
+        ESPNowEventData eventData = {};
+        eventData.event = ESPNowEvent::DATA_RECEIVED;
+        memcpy(eventData.mac, rxItem.mac, 6);
+        eventData.packet = &packet;
+        triggerEvent(ESPNowEvent::DATA_RECEIVED, &eventData);
+    }
+    
+    if (processed > 0) {
+        Serial.printf("\n[ESPNowManager::processRxQueue] Processed %d packets\n", processed);
+    }
 }
 
 int ESPNowManager::getQueuePending() {

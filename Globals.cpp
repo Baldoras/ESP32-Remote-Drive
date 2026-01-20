@@ -16,7 +16,7 @@
 #include "include/UserConfig.h"
 #include "include/SerialCommandHandler.h"
 #include "include/PowerManager.h"
-#include "include/ESPNowManager.h"
+#include "include/ESPNowRemoteController.h"
 #include "include/BatteryMonitor.h"
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -28,7 +28,7 @@ LogHandler logger(nullptr, LOG_INFO);  // Startet ohne SD, nur Serial, Level INF
 UserConfig userConfig;
 SerialCommandHandler serialCmd;
 PowerManager powerMgr;
-ESPNowManager espNow;
+ESPNowRemoteController espNow;
 BatteryMonitor battery;
 
 // ═══════════════════════════════════════════════════════════════════════════

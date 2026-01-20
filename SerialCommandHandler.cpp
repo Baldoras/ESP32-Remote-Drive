@@ -13,7 +13,7 @@ SerialCommandHandler::SerialCommandHandler()
 void SerialCommandHandler::begin(SDCardHandler* sdHandler, 
                                  LogHandler* logger,
                                  BatteryMonitor* battery,
-                                 ESPNowManager* espNow,
+                                 ESPNowRemoteController* espNow,
                                  UserConfig* config) {
     this->sdHandler = sdHandler;
     this->logger = logger;

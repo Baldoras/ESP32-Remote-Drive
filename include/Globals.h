@@ -18,12 +18,11 @@ class LogHandler;
 class UserConfig;
 class SerialCommandHandler;
 class PowerManager;
-class ESPNowManager;
+class ESPNowRemoteController;
 class BatteryMonitor;
 class ESPNowPacket;
 
 enum class MainCmd : uint8_t;
-struct ResultQueueItem;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EXTERN DECLARATIONS - MODUL-INSTANZEN
@@ -34,7 +33,7 @@ extern LogHandler logger;
 extern UserConfig userConfig;
 extern SerialCommandHandler serialCmd;
 extern PowerManager powerMgr;
-extern ESPNowManager espNow;
+extern ESPNowRemoteController espNow;
 extern BatteryMonitor battery;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -61,19 +60,6 @@ extern unsigned long lastRemoteActivity;
 // Initialisierung
 bool initializeSystem();
 void shutdownSystem();
-
-// Motor-Steuerung
-void setMotorSpeed(int16_t left, int16_t right);
-void stopMotors();
-
-// LED-Steuerung
-void setStatusLED(bool state);
-void setErrorLED(bool state);
-void blinkStatusLED(int times = 3);
-
-// ESP-NOW Callbacks
-void onESPNowDataReceived(const uint8_t* mac, MainCmd cmd, ESPNowPacket* packet);
-void onESPNowConnectionChanged(bool connected);
 
 // Telemetrie senden
 void sendTelemetry();

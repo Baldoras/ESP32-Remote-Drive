@@ -1,7 +1,7 @@
 /**
  * ESPNowManager.h
  * 
- * Universelle ESP-NOW Kommunikationsklasse mit TLV-Protokoll
+ * Generische ESP-NOW Kommunikations-Basisklasse mit TLV-Protokoll
  * OHNE Worker-Thread - direkte Verarbeitung im Main-Thread
  * 
  * Protokoll-Format:
@@ -15,6 +15,7 @@
  * - Heartbeat mit Timeout-Erkennung
  * - Callbacks + UI-Event-Integration
  * - KEINE Worker-Threads (ESP-NOW ist bereits async!)
+ * - Erweiterbar durch Vererbung für projekt-spezifische Funktionalität
  */
 
 #ifndef ESP_NOW_MANAGER_H
@@ -30,84 +31,12 @@
 #include <functional>
 #include <vector>
 #include "setupConf.h"
+#include "ESPNowPacket.h"
 
 // Internes Hardware-Limit für Peers (ESP-NOW Hardware-Beschränkung)
 #ifndef ESPNOW_MAX_PEERS_LIMIT
 #define ESPNOW_MAX_PEERS_LIMIT  20      // ESP-NOW Hardware-Maximum
 #endif
-
-// ═══════════════════════════════════════════════════════════════════════════
-// KONFIGURATION
-// ═══════════════════════════════════════════════════════════════════════════
-
-// Queue-Größen und Packet-Größen sind in setupConf.h definiert
-
-// ═══════════════════════════════════════════════════════════════════════════
-// COMMAND ENUMS
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Haupt-Commands (Main-CMD)
- */
-enum class MainCmd : uint8_t {
-    NONE            = 0x00,
-    HEARTBEAT       = 0x01,     // Heartbeat/Ping
-    ACK             = 0x02,     // Bestätigung
-    DATA_REQUEST    = 0x03,     // Datenanfrage
-    DATA_RESPONSE   = 0x04,     // Datenantwort
-    PAIR_REQUEST    = 0x05,     // Pairing-Anfrage
-    PAIR_RESPONSE   = 0x06,     // Pairing-Antwort
-    ERROR           = 0x07,     // Fehlermeldung
-    
-    // User-Commands ab 0x10
-    USER_START      = 0x10
-};
-
-/**
- * Sub-Commands / Data-Identifier
- */
-enum class DataCmd : uint8_t {
-    NONE            = 0x00,
-    
-    // Joystick (0x01-0x0F)
-    JOYSTICK_X      = 0x01,     // int16_t
-    JOYSTICK_Y      = 0x02,     // int16_t
-    JOYSTICK_BTN    = 0x03,     // uint8_t (0/1)
-    JOYSTICK_ALL    = 0x04,     // struct { int16_t x, y; uint8_t btn; }
-    
-    // Buttons/Inputs (0x10-0x1F)
-    BUTTON_STATE    = 0x10,     // uint8_t (Bitmask)
-    SWITCH_STATE    = 0x11,     // uint8_t (Bitmask)
-    POTENTIOMETER   = 0x12,     // uint16_t (0-4095)
-    
-    // Motor/Antrieb (0x20-0x2F)
-    MOTOR_LEFT      = 0x20,     // int16_t (-100 bis +100)
-    MOTOR_RIGHT     = 0x21,     // int16_t (-100 bis +100)
-    MOTOR_ALL       = 0x22,     // struct { int16_t left, right; }
-    SPEED           = 0x23,     // uint8_t (0-100%)
-    
-    // Telemetrie (0x30-0x3F)
-    BATTERY_VOLTAGE = 0x30,     // uint16_t (mV)
-    BATTERY_PERCENT = 0x31,     // uint8_t (0-100%)
-    TEMPERATURE     = 0x32,     // int16_t (°C * 10)
-    RSSI            = 0x33,     // int8_t (dBm)
-    
-    // Status (0x40-0x4F)
-    CONNECTION      = 0x40,     // uint8_t (0=disconnected, 1=connected)
-    ERROR_CODE      = 0x41,     // uint8_t
-    MODE            = 0x42,     // uint8_t
-    
-    // Sensoren (0x50-0x5F)
-    DISTANCE        = 0x50,     // uint16_t (mm)
-    ACCELERATION    = 0x51,     // struct { int16_t x, y, z; }
-    GYROSCOPE       = 0x52,     // struct { int16_t x, y, z; }
-    
-    // Custom (0xA0-0xFF)
-    CUSTOM_1        = 0xA0,
-    CUSTOM_2        = 0xA1,
-    CUSTOM_3        = 0xA2,
-    RAW_DATA        = 0xFF      // Beliebige Rohdaten
-};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FORWARD DECLARATIONS
@@ -128,221 +57,6 @@ struct RxQueueItem {
     uint8_t data[ESPNOW_MAX_PACKET_SIZE];
     size_t length;
     unsigned long timestamp;
-};
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PAKET-KLASSE MIT BUILDER & PARSER
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * ESP-NOW Paket mit Builder-Pattern und Parser
- * 
- * Protokoll: [MAIN_CMD] [TOTAL_LEN] [SUB_CMD] [LEN] [DATA] [SUB_CMD] [LEN] [DATA] ...
- */
-class ESPNowPacket {
-public:
-    ESPNowPacket();
-    ~ESPNowPacket();
-    
-    // ═══════════════════════════════════════════════════════════════════════
-    // BUILDER-PATTERN
-    // ═══════════════════════════════════════════════════════════════════════
-    
-    /**
-     * Paket starten mit Main-Command
-     * @param cmd Haupt-Command
-     * @return Referenz für Method-Chaining
-     */
-    ESPNowPacket& begin(MainCmd cmd);
-    
-    /**
-     * Sub-Daten hinzufügen
-     * @param dataCmd Daten-Identifier
-     * @param data Daten-Pointer
-     * @param len Datenlänge
-     * @return Referenz für Method-Chaining
-     */
-    ESPNowPacket& add(DataCmd dataCmd, const void* data, size_t len);
-    
-    /**
-     * Einzelnes Byte hinzufügen
-     */
-    ESPNowPacket& addByte(DataCmd dataCmd, uint8_t value);
-    
-    /**
-     * int8_t hinzufügen
-     */
-    ESPNowPacket& addInt8(DataCmd dataCmd, int8_t value);
-    
-    /**
-     * uint16_t hinzufügen
-     */
-    ESPNowPacket& addUInt16(DataCmd dataCmd, uint16_t value);
-    
-    /**
-     * int16_t hinzufügen
-     */
-    ESPNowPacket& addInt16(DataCmd dataCmd, int16_t value);
-    
-    /**
-     * uint32_t hinzufügen
-     */
-    ESPNowPacket& addUInt32(DataCmd dataCmd, uint32_t value);
-    
-    /**
-     * int32_t hinzufügen
-     */
-    ESPNowPacket& addInt32(DataCmd dataCmd, int32_t value);
-    
-    /**
-     * float hinzufügen
-     */
-    ESPNowPacket& addFloat(DataCmd dataCmd, float value);
-    
-    /**
-     * Struct hinzufügen (Template)
-     */
-    template<typename T>
-    ESPNowPacket& addStruct(DataCmd dataCmd, const T& data) {
-        return add(dataCmd, &data, sizeof(T));
-    }
-    
-    // ═══════════════════════════════════════════════════════════════════════
-    // PARSER
-    // ═══════════════════════════════════════════════════════════════════════
-    
-    /**
-     * Paket aus Rohdaten parsen
-     * @param rawData Empfangene Rohdaten
-     * @param len Datenlänge
-     * @return true bei Erfolg
-     */
-    bool parse(const uint8_t* rawData, size_t len);
-    
-    /**
-     * Prüfen ob DataCmd vorhanden ist
-     */
-    bool has(DataCmd dataCmd) const;
-    
-    /**
-     * Daten-Pointer abrufen (nullptr wenn nicht vorhanden)
-     */
-    const uint8_t* getData(DataCmd dataCmd, size_t* outLen = nullptr) const;
-    
-    /**
-     * Daten als Template-Typ abrufen (nullptr wenn nicht vorhanden oder falsche Größe)
-     */
-    template<typename T>
-    const T* get(DataCmd dataCmd) const {
-        size_t len;
-        const uint8_t* data = getData(dataCmd, &len);
-        if (data && len >= sizeof(T)) {
-            return reinterpret_cast<const T*>(data);
-        }
-        return nullptr;
-    }
-    
-    /**
-     * Byte abrufen
-     */
-    bool getByte(DataCmd dataCmd, uint8_t& outValue) const;
-    
-    /**
-     * int8_t abrufen
-     */
-    bool getInt8(DataCmd dataCmd, int8_t& outValue) const;
-    
-    /**
-     * uint16_t abrufen
-     */
-    bool getUInt16(DataCmd dataCmd, uint16_t& outValue) const;
-    
-    /**
-     * int16_t abrufen
-     */
-    bool getInt16(DataCmd dataCmd, int16_t& outValue) const;
-    
-    /**
-     * uint32_t abrufen
-     */
-    bool getUInt32(DataCmd dataCmd, uint32_t& outValue) const;
-    
-    /**
-     * int32_t abrufen
-     */
-    bool getInt32(DataCmd dataCmd, int32_t& outValue) const;
-    
-    /**
-     * float abrufen
-     */
-    bool getFloat(DataCmd dataCmd, float& outValue) const;
-    
-    // ═══════════════════════════════════════════════════════════════════════
-    // GETTER
-    // ═══════════════════════════════════════════════════════════════════════
-    
-    /**
-     * Main-Command abrufen
-     */
-    MainCmd getMainCmd() const { return mainCmd; }
-    
-    /**
-     * Rohdaten-Pointer abrufen
-     */
-    const uint8_t* getRawData() const { return buffer; }
-    
-    /**
-     * Gesamtlänge abrufen (inkl. Header)
-     */
-    size_t getTotalLength() const { return 2 + dataLength; }
-    
-    /**
-     * Datenlänge abrufen (ohne Header)
-     */
-    size_t getDataLength() const { return dataLength; }
-    
-    /**
-     * Anzahl der Sub-Einträge
-     */
-    int getEntryCount() const { return entryCount; }
-    
-    /**
-     * Ist Paket gültig?
-     */
-    bool isValid() const { return valid; }
-    
-    /**
-     * Paket zurücksetzen
-     */
-    void clear();
-    
-    /**
-     * Debug-Ausgabe
-     */
-    void print() const;
-
-private:
-    // Paket-Buffer
-    uint8_t buffer[ESPNOW_MAX_PACKET_SIZE];
-    
-    // Parsed Data Index (für schnellen Zugriff)
-    struct DataEntry {
-        DataCmd cmd;
-        uint8_t offset;     // Offset im Buffer (nach Header)
-        uint8_t length;
-    };
-    static const int MAX_ENTRIES = 20;
-    DataEntry entries[MAX_ENTRIES];
-    int entryCount;
-    
-    // Status
-    MainCmd mainCmd;
-    size_t dataLength;      // Länge der Nutzdaten (ohne 2-Byte Header)
-    size_t writePos;        // Aktuelle Schreibposition
-    bool valid;
-    
-    // Helper
-    int findEntry(DataCmd cmd) const;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -399,29 +113,29 @@ typedef std::function<void(const uint8_t* mac, bool success)> ESPNowSendCallback
 typedef std::function<void(ESPNowEventData* eventData)> ESPNowEventCallback;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// HAUPTKLASSE
+// HAUPTKLASSE (Basis)
 // ═══════════════════════════════════════════════════════════════════════════
 
 class ESPNowManager {
 public:
     
     /**
+     * Konstruktor & Destruktor
+     */
+    ESPNowManager();
+    virtual ~ESPNowManager();
+    
+    /**
      * ESP-NOW initialisieren
      * @param channel WiFi-Kanal (0 = auto)
      * @return true bei Erfolg
      */
-    bool begin(uint8_t channel = 0);
-
-    /**
-     * Konstruktor & Destruktor (public für globale Instanz)
-     */
-    ESPNowManager();
-    ~ESPNowManager();
+    virtual bool begin(uint8_t channel = 0);
 
     /**
      * ESP-NOW beenden und aufräumen
      */
-    void end();
+    virtual void end();
 
     /**
      * Ist ESP-NOW initialisiert?
@@ -551,7 +265,7 @@ public:
      * - Triggert Events im Main-Thread
      * - Prüft Heartbeat/Timeouts
      */
-    void update();
+    virtual void update();
 
     /**
      * Eigene MAC-Adresse abrufen
@@ -576,14 +290,17 @@ public:
     /**
      * Debug-Info ausgeben
      */
-    void printInfo();
+    virtual void printInfo();
 
     /**
      * Queue-Statistiken abrufen
      */
     int getQueuePending();
 
-private:
+protected:
+    // Statischer Pointer auf die aktive Instanz (für Callbacks)
+    static ESPNowManager* instance;
+    
     // Status
     bool initialized;
     uint8_t wifiChannel;
@@ -611,10 +328,10 @@ private:
     static void onDataRecvStatic(const esp_now_recv_info_t* info, const uint8_t* data, int len);
     static void onDataSentStatic(const wifi_tx_info_t* tx_info, esp_now_send_status_t status);
 
-    // Interne Methoden
-    void processRxQueue();
-    void handleSendStatus(const uint8_t* mac, bool success);
-    void checkTimeouts();
+    // Interne Methoden (protected für Vererbung)
+    virtual void processRxQueue();
+    virtual void handleSendStatus(const uint8_t* mac, bool success);
+    virtual void checkTimeouts();
     void triggerEvent(ESPNowEvent event, ESPNowEventData* data);
     int findPeerIndex(const uint8_t* mac);
     bool compareMac(const uint8_t* mac1, const uint8_t* mac2);
