@@ -1,20 +1,30 @@
 /**
  * ESPNowRemoteController.cpp
  * 
- * Implementation mit vollständigem Pairing-Handling
+ * Implementation mit Debug (ohne protected members)
  */
 
 #include "include/ESPNowRemoteController.h"
 #include "include/ESPNowPacket.h"
 #include "include/UserConfig.h"
+#include "include/MotorController.h"
 #include "include/Globals.h"
 
 extern UserConfig userConfig;
+extern MotorController motorCtrl;
+
+// Joystick-Daten Struktur
+struct __attribute__((packed)) JoystickData {
+    int16_t x;
+    int16_t y;
+    uint8_t btn;
+};
 
 ESPNowRemoteController::ESPNowRemoteController()
     : ESPNowManager()
 {
     Serial.println("[ESPNowRemoteController] Constructor");
+    Serial.printf("[ESPNowRemoteController] JoystickData size: %d bytes\n", sizeof(JoystickData));
 }
 
 ESPNowRemoteController::~ESPNowRemoteController() {
@@ -26,191 +36,64 @@ ESPNowRemoteController::~ESPNowRemoteController() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 bool ESPNowRemoteController::isValidMasterMac(const uint8_t* mac) {
-    if (!mac) {
-        Serial.println("[isValidMasterMac] ❌ mac is NULL!");
-        return false;
-    }
+    if (!mac) return false;
     
     const char* configMac = userConfig.getEspnowPeerMac();
-    
     uint8_t masterMac[6];
+    
     if (!stringToMac(configMac, masterMac)) {
-        Serial.printf("[isValidMasterMac] ❌ Invalid config MAC: %s\n", configMac);
         return false;
     }
     
-    bool match = compareMac(mac, masterMac);
-    
-    Serial.printf("[isValidMasterMac] %s vs %s = %s\n",
-                 macToString(mac).c_str(),
-                 configMac,
-                 match ? "MATCH" : "NO MATCH");
-    
-    return match;
+    return compareMac(mac, masterMac);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PAIR_REQUEST HANDLER - VOLLSTÄNDIG
+// PAIR_REQUEST HANDLER
 // ═══════════════════════════════════════════════════════════════════════════
 
 void ESPNowRemoteController::handlePairRequest(const uint8_t* mac, unsigned long timestamp) {
     Serial.println("\n╔════════════════════════════════════════╗");
     Serial.println("║     PAIR_REQUEST HANDLER               ║");
     Serial.println("╚════════════════════════════════════════╝");
-    Serial.printf("From: %s\n", macToString(mac).c_str());
-    
-    // ─────────────────────────────────────────────────────────────────────
-    // SCHRITT 1: MAC-Validierung
-    // ─────────────────────────────────────────────────────────────────────
-    Serial.println("\n[1/6] MAC-Validierung...");
     
     if (!isValidMasterMac(mac)) {
-        Serial.println("  ❌ REJECTED: Invalid Master MAC!");
+        Serial.println("❌ REJECTED: Invalid MAC!");
         
         ESPNowPacket errorPacket;
         errorPacket.begin(MainCmd::ERROR);
-        uint8_t errorCode = 0x01;  // Invalid MAC
+        uint8_t errorCode = 0x01;
         errorPacket.addByte(DataCmd::ERROR_CODE, errorCode);
-        
-        Serial.println("  → Sending ERROR 0x01");
         send(mac, errorPacket);
-        
-        Serial.println("════════════════════════════════════════\n");
         return;
     }
     
-    Serial.println("  ✅ MAC validated - Master accepted!");
-    
-    // ─────────────────────────────────────────────────────────────────────
-    // SCHRITT 2: Peer hinzufügen (falls noch nicht vorhanden)
-    // ─────────────────────────────────────────────────────────────────────
-    Serial.println("\n[2/6] Adding peer...");
-    
-    bool wasAlreadyPeer = hasPeer(mac);
-    
-    if (!wasAlreadyPeer) {
-        Serial.println("  → Calling addPeer()...");
-        
+    if (!hasPeer(mac)) {
         if (!addPeer(mac, false)) {
-            Serial.println("  ❌ addPeer() FAILED!");
-            Serial.println("  Possible reasons:");
-            Serial.println("    - Peer limit reached");
-            Serial.println("    - ESP-NOW error");
-            Serial.println("════════════════════════════════════════\n");
+            Serial.println("❌ addPeer() FAILED!");
             return;
         }
-        
-        Serial.println("  ✅ Peer added successfully");
-    } else {
-        Serial.println("  ℹ️  Peer already exists (re-pairing)");
     }
-    
-    // Verify
-    if (!hasPeer(mac)) {
-        Serial.println("  ❌ FATAL ERROR: hasPeer() returns false after addPeer()!");
-        Serial.println("════════════════════════════════════════\n");
-        return;
-    }
-    
-    Serial.println("  ✅ Peer confirmed in peer list");
-    
-    // ─────────────────────────────────────────────────────────────────────
-    // SCHRITT 3: Peer-Status auf CONNECTED setzen
-    // ─────────────────────────────────────────────────────────────────────
-    Serial.println("\n[3/6] Setting peer status to CONNECTED...");
-    
-    bool statusUpdated = false;
     
     if (xSemaphoreTake(peersMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         int index = findPeerIndex(mac);
-        Serial.printf("  Peer index: %d\n", index);
-        
         if (index >= 0) {
-            // Status auf CONNECTED setzen
-            bool wasConnected = peers[index].connected;
             peers[index].connected = true;
             peers[index].lastSeen = timestamp;
-            
-            Serial.printf("  Previous status: %s\n", wasConnected ? "CONNECTED" : "DISCONNECTED");
-            Serial.println("  ✅ Peer marked as CONNECTED");
-            Serial.printf("  Last seen: %lu ms\n", timestamp);
-            
-            statusUpdated = true;
-        } else {
-            Serial.println("  ❌ Peer index not found!");
         }
-        
         xSemaphoreGive(peersMutex);
-    } else {
-        Serial.println("  ❌ Mutex timeout!");
     }
-    
-    if (!statusUpdated) {
-        Serial.println("  ⚠️  Status update failed - continuing anyway");
-    }
-    
-    // ─────────────────────────────────────────────────────────────────────
-    // SCHRITT 4: PAIR_RESPONSE Paket erstellen
-    // ─────────────────────────────────────────────────────────────────────
-    Serial.println("\n[4/6] Creating PAIR_RESPONSE packet...");
     
     ESPNowPacket response;
     response.begin(MainCmd::PAIR_RESPONSE);
-    
-    Serial.printf("  MainCmd: 0x%02X (PAIR_RESPONSE)\n", static_cast<uint8_t>(MainCmd::PAIR_RESPONSE));
-    Serial.printf("  Packet length: %d bytes\n", response.getTotalLength());
-    Serial.printf("  Target MAC: %s\n", macToString(mac).c_str());
-    
-    // Optional: Eigene MAC als Bestätigung mitschicken
-    // uint8_t ownMac[6];
-    // getOwnMac(ownMac);
-    // response.add(DataCmd::RAW_DATA_1, ownMac, 6);
-    
-    Serial.println("  ✅ PAIR_RESPONSE packet ready");
-    
-    // ─────────────────────────────────────────────────────────────────────
-    // SCHRITT 5: PAIR_RESPONSE senden
-    // ─────────────────────────────────────────────────────────────────────
-    Serial.println("\n[5/6] Sending PAIR_RESPONSE...");
-    Serial.printf("  Current peer count: %d\n", getPeerCount());
-    Serial.printf("  Has peer (double-check): %s\n", hasPeer(mac) ? "YES" : "NO");
-    
-    bool sendResult = send(mac, response);
-    
-    if (!sendResult) {
-        Serial.println("  ❌ SEND FAILED!");
-        Serial.println("  Possible reasons:");
-        Serial.println("    - Peer not properly registered");
-        Serial.println("    - ESP-NOW send error");
-        Serial.println("    - Buffer full");
-        Serial.println("════════════════════════════════════════\n");
-        return;
-    }
-    
-    Serial.println("  ✅ PAIR_RESPONSE sent successfully!");
-    
-    // ─────────────────────────────────────────────────────────────────────
-    // SCHRITT 6: PEER_CONNECTED Event triggern
-    // ─────────────────────────────────────────────────────────────────────
-    Serial.println("\n[6/6] Triggering PEER_CONNECTED event...");
+    send(mac, response);
     
     ESPNowEventData eventData = {};
     eventData.event = ESPNowEvent::PEER_CONNECTED;
     memcpy(eventData.mac, mac, 6);
     triggerEvent(ESPNowEvent::PEER_CONNECTED, &eventData);
     
-    Serial.println("  ✅ Event triggered");
-    
-    // ─────────────────────────────────────────────────────────────────────
-    // PAIRING ABGESCHLOSSEN
-    // ─────────────────────────────────────────────────────────────────────
-    Serial.println("\n  ╔════════════════════════════════════╗");
-    Serial.println("  ║   🎉 PAIRING SUCCESSFUL! 🎉        ║");
-    Serial.println("  ╚════════════════════════════════════╝");
-    Serial.printf("  Master: %s\n", macToString(mac).c_str());
-    Serial.println("  Status: CONNECTED");
-    Serial.println("  Ready to receive commands!");
-    Serial.println("════════════════════════════════════════\n");
+    Serial.println("✅ PAIRING SUCCESSFUL!\n");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -218,54 +101,28 @@ void ESPNowRemoteController::handlePairRequest(const uint8_t* mac, unsigned long
 // ═══════════════════════════════════════════════════════════════════════════
 
 void ESPNowRemoteController::processRxQueue() {
-    if (!rxQueue) {
-        Serial.println("[processRxQueue] ❌ rxQueue is NULL!");
-        return;
-    }
+    if (!rxQueue) return;
     
     int pending = uxQueueMessagesWaiting(rxQueue);
-    if (pending == 0) {
-        return; // Nichts zu tun
-    }
-    
-    Serial.printf("\n[processRxQueue] Processing %d packets...\n", pending);
+    if (pending == 0) return;
     
     RxQueueItem rxItem;
-    int processed = 0;
     
     while (xQueueReceive(rxQueue, &rxItem, 0) == pdTRUE) {
-        processed++;
-        
-        Serial.println("\n────────────────────────────────────────");
-        Serial.printf("Packet #%d\n", processed);
-        Serial.printf("  From: %s\n", macToString(rxItem.mac).c_str());
-        Serial.printf("  Length: %d bytes\n", rxItem.length);
-        
-        // Hex dump (erste 20 Bytes)
-        Serial.print("  Data: ");
-        for (int i = 0; i < min((int)rxItem.length, 20); i++) {
-            Serial.printf("%02X ", rxItem.data[i]);
-        }
-        if (rxItem.length > 20) Serial.print("...");
-        Serial.println();
         
         // Parse
         ESPNowPacket packet;
         if (!packet.parse(rxItem.data, rxItem.length)) {
-            Serial.println("  ❌ Parse FAILED!");
+            Serial.println("[RX] ❌ Parse FAILED!");
             continue;
         }
         
-        Serial.println("  ✅ Parse OK");
-        
         MainCmd cmd = packet.getMainCmd();
-        Serial.printf("  MainCmd: 0x%02X\n", static_cast<uint8_t>(cmd));
         
         // ═════════════════════════════════════════════════════════════════
-        // PAIR_REQUEST - Vollständiges Pairing-Handling
+        // PAIR_REQUEST
         // ═════════════════════════════════════════════════════════════════
         if (cmd == MainCmd::PAIR_REQUEST) {
-            Serial.println("  → PAIR_REQUEST detected");
             handlePairRequest(rxItem.mac, rxItem.timestamp);
             continue;
         }
@@ -274,9 +131,6 @@ void ESPNowRemoteController::processRxQueue() {
         // HEARTBEAT
         // ═════════════════════════════════════════════════════════════════
         if (cmd == MainCmd::HEARTBEAT) {
-            Serial.println("  → HEARTBEAT received");
-            
-            // Peer aktualisieren
             if (xSemaphoreTake(peersMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
                 int index = findPeerIndex(rxItem.mac);
                 if (index >= 0) {
@@ -287,41 +141,89 @@ void ESPNowRemoteController::processRxQueue() {
                 xSemaphoreGive(peersMutex);
             }
             
-            // Event
-            ESPNowEventData eventData = {};
-            eventData.event = ESPNowEvent::HEARTBEAT_RECEIVED;
-            memcpy(eventData.mac, rxItem.mac, 6);
-            triggerEvent(ESPNowEvent::HEARTBEAT_RECEIVED, &eventData);
+            ESPNowPacket ackPacket;
+            ackPacket.begin(MainCmd::ACK);
+            send(rxItem.mac, ackPacket);
             
             continue;
         }
         
         // ═════════════════════════════════════════════════════════════════
-        // JOYSTICK DATA
+        // JOYSTICK DATA - MIT DEBUG
         // ═════════════════════════════════════════════════════════════════
         if (cmd == MainCmd::USER_START || cmd == MainCmd::DATA_REQUEST) {
             
-            if (packet.has(DataCmd::JOYSTICK_X) && packet.has(DataCmd::JOYSTICK_Y)) {
-                int16_t joyX, joyY;
+            Serial.println("\n──── JOYSTICK DATA ────");
+            Serial.printf("MainCmd: 0x%02X\n", static_cast<uint8_t>(cmd));
+            Serial.printf("Entries: %d\n", packet.getEntryCount());
+            
+            // JOYSTICK_ALL prüfen
+            if (packet.has(DataCmd::JOYSTICK_ALL)) {
+                Serial.println("✅ Has JOYSTICK_ALL (0x13)");
                 
-                if (packet.getInt16(DataCmd::JOYSTICK_X, joyX) &&
-                    packet.getInt16(DataCmd::JOYSTICK_Y, joyY)) {
-                    
-                    Serial.printf("  → Joystick: X=%d, Y=%d\n", joyX, joyY);
-                    
-                    // Callback aufrufen (wird in main .ino gesetzt)
-                    if (receiveCallback) {
-                        receiveCallback(rxItem.mac, packet);
+                size_t dataLen = 0;
+                const uint8_t* data = packet.getData(DataCmd::JOYSTICK_ALL, &dataLen);
+                
+                Serial.printf("Data length: %d bytes (expected: %d)\n", dataLen, sizeof(JoystickData));
+                
+                if (data && dataLen > 0) {
+                    // Hex dump der Rohdaten
+                    Serial.print("Raw data: ");
+                    for (size_t i = 0; i < dataLen; i++) {
+                        Serial.printf("%02X ", data[i]);
                     }
+                    Serial.println();
                     
-                    // Event
-                    ESPNowEventData eventData = {};
-                    eventData.event = ESPNowEvent::DATA_RECEIVED;
-                    memcpy(eventData.mac, rxItem.mac, 6);
-                    eventData.packet = &packet;
-                    triggerEvent(ESPNowEvent::DATA_RECEIVED, &eventData);
+                    // Prüfe Länge
+                    if (dataLen >= sizeof(JoystickData)) {
+                        const JoystickData* joyData = packet.get<JoystickData>(DataCmd::JOYSTICK_ALL);
+                        
+                        if (joyData) {
+                            Serial.printf("✅ Joystick: X=%d, Y=%d, Btn=%d\n", 
+                                         joyData->x, joyData->y, joyData->btn);
+                            
+                            // An Motor weitergeben
+                            motorCtrl.processMovementInput((int8_t)joyData->x, (int8_t)joyData->y);
+                            
+                        } else {
+                            Serial.println("❌ get<JoystickData>() returned NULL!");
+                        }
+                    } else {
+                        Serial.printf("❌ Data too short: %d < %d bytes\n", dataLen, sizeof(JoystickData));
+                        
+                        // Versuche manuelle Extraktion (Little Endian)
+                        if (dataLen >= 5) {
+                            int16_t x = (int16_t)((data[1] << 8) | data[0]);
+                            int16_t y = (int16_t)((data[3] << 8) | data[2]);
+                            uint8_t btn = data[4];
+                            
+                            Serial.printf("⚠️  Manual extract: X=%d, Y=%d, Btn=%d\n", x, y, btn);
+                            motorCtrl.processMovementInput((int8_t)x, (int8_t)y);
+                        }
+                    }
+                } else {
+                    Serial.println("❌ getData() returned NULL or length=0");
+                }
+                
+            } else {
+                Serial.println("❌ JOYSTICK_ALL (0x13) NOT found!");
+                
+                // Fallback: Einzelne X/Y Werte (0x10, 0x11)
+                if (packet.has(DataCmd::JOYSTICK_X) && packet.has(DataCmd::JOYSTICK_Y)) {
+                    int16_t joyX, joyY;
+                    
+                    if (packet.getInt16(DataCmd::JOYSTICK_X, joyX) &&
+                        packet.getInt16(DataCmd::JOYSTICK_Y, joyY)) {
+                        
+                        Serial.printf("✅ Joystick (separate): X=%d, Y=%d\n", joyX, joyY);
+                        motorCtrl.processMovementInput((int8_t)joyX, (int8_t)joyY);
+                    }
+                } else {
+                    Serial.println("❌ No joystick data found!");
                 }
             }
+            
+            Serial.println("──────────────────────");
             
             // Peer aktualisieren
             if (xSemaphoreTake(peersMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -336,13 +238,5 @@ void ESPNowRemoteController::processRxQueue() {
             
             continue;
         }
-        
-        // ═════════════════════════════════════════════════════════════════
-        // ANDERE COMMANDS
-        // ═════════════════════════════════════════════════════════════════
-        Serial.printf("  → Unhandled MainCmd: 0x%02X\n", static_cast<uint8_t>(cmd));
     }
-    
-    Serial.println("────────────────────────────────────────");
-    Serial.printf("[processRxQueue] Processed %d packets\n\n", processed);
 }
