@@ -35,14 +35,14 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Motor Links
-#define MOTOR_ENA      10    // PWM für linken Motor (Geschwindigkeit)
-#define MOTOR_IN1      11    // IN1 für linken Motor (Richtung)
-#define MOTOR_IN2      12    // IN2 für linken Motor (Richtung)
+#define MOTOR_ENA      45    // PWM für linken Motor (Geschwindigkeit)
+#define MOTOR_IN1      48    // IN1 für linken Motor (Richtung)
+#define MOTOR_IN2      47    // IN2 für linken Motor (Richtung)
 
 // Motor Rechts
-#define MOTOR_ENB     13    // PWM für rechten Motor (Geschwindigkeit)
-#define MOTOR_IN3     9     // IN1 für rechten Motor (Richtung)
-#define MOTOR_IN4     16    // IN2 für rechten Motor (Richtung)
+#define MOTOR_ENB     16    // PWM für rechten Motor (Geschwindigkeit)
+#define MOTOR_IN3     18    // IN1 für rechten Motor (Richtung)
+#define MOTOR_IN4     17    // IN2 für rechten Motor (Richtung)
 
 // Motor PWM Einstellungen
 #define MOTOR_PWM_FREQ      20000 // 20 kHz PWM-Frequenz
