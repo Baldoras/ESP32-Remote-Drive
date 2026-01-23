@@ -187,13 +187,13 @@ void PowerManager::update() {
                 log->logf(LogLevel::LOG_ERROR, "POWER", msg);
             }
             
-            // LED-Blink-Pattern für Warnung
+            /*// LED-Blink-Pattern für Warnung
             for (int i = 0; i < 5; i++) {
                 digitalWrite(LED_ERROR, HIGH);
                 delay(100);
                 digitalWrite(LED_ERROR, LOW);
                 delay(100);
-            }
+            }*/
             
             criticalWarningShown = true;
             criticalWarningStart = millis();
@@ -228,8 +228,8 @@ void PowerManager::update() {
 
 void PowerManager::shutdownPeripherals() {
     // LEDs ausschalten
-    digitalWrite(LED_STATUS, LOW);
-    digitalWrite(LED_ERROR, LOW);
+    //digitalWrite(LED_STATUS, LOW);
+    //digitalWrite(LED_ERROR, LOW);
     
     DEBUG_PRINTLN("  LEDs ausgeschaltet");
     DEBUG_PRINTLN("  Peripherals shutdown complete");
