@@ -65,13 +65,13 @@ void MotorController::processMovementInput(int8_t joystickX, int8_t joystickY) {
     // Differential steering
     // leftSpeed: Vorwärts/Rückwärts + Drehung nach rechts erhöht links
     // rightSpeed: Vorwärts/Rückwärts - Drehung nach rechts verringert rechts
-    float leftSpeed = scaledY + scaledX;   // Range: -200 bis +200
-    float rightSpeed = scaledY - scaledX;  // Range: -200 bis +200
+    float leftSpeed = scaledY - scaledX;   // Range: -200 bis +200
+    float rightSpeed = scaledY + scaledX;  // Range: -200 bis +200
 
     // Skaliere auf PWM-Bereich (0-255) basierend auf kombinierter Geschwindigkeit
     // leftSpeed/rightSpeed liegen zwischen -200 und +200
-    int leftPWM = (int)(abs(leftSpeed) * 255.0 / 200.0);
-    int rightPWM = (int)(abs(rightSpeed) * 255.0 / 200.0);
+    int leftPWM = (int)(abs(leftSpeed) * 255.0 / 100.0);
+    int rightPWM = (int)(abs(rightSpeed) * 255.0 / 100.0);
 
     // Begrenze PWM-Werte
     leftPWM = constrain(leftPWM, 0, 255);
@@ -145,6 +145,7 @@ void MotorController::setMotor(uint8_t motor, bool forward, uint8_t pwm) {
             digitalWrite(pinIn1, LOW);
             digitalWrite(pinIn2, HIGH);
         }
+        Serial.printf("Motor links: PWM %d direction %d\n", pwm, forward);
         analogWrite(pinEnA, pwm);
     } 
     else if (motor == MOTOR_ID_RIGHT) {
@@ -156,6 +157,7 @@ void MotorController::setMotor(uint8_t motor, bool forward, uint8_t pwm) {
             digitalWrite(pinIn3, LOW);
             digitalWrite(pinIn4, HIGH);
         }
+        Serial.printf("Motor rechts: PWM %d direction %d\n", pwm, forward);
         analogWrite(pinEnB, pwm);
     }
 }
