@@ -35,7 +35,7 @@ public:
     // Get telemetry data
     MotorTelemetry getTelemetry() const;
     
-    // Update method for periodic tasks
+    // Update method for periodic tasks (SAFETY TIMEOUT!)
     void update();
 
 private:
@@ -47,8 +47,15 @@ private:
     MotorTelemetry telemetry;
     bool enabled;
     
+    // Safety timeout
+    unsigned long lastCommandTime;    // Zeitpunkt des letzten Joystick-Commands
+    static const unsigned long COMMAND_TIMEOUT_MS = 200;  // 200ms Timeout
+    
     // Internal motor control
     void setMotor(uint8_t motor, bool forward, uint8_t pwm);
+    
+    // Safety check
+    void checkCommandTimeout();
 };
 
 #endif // MOTOR_CONTROLLER_H

@@ -7,7 +7,8 @@ extern LogHandler logger;
 MotorController::MotorController()
     : pinEnA(0), pinIn1(0), pinIn2(0),
       pinEnB(0), pinIn3(0), pinIn4(0),
-      enabled(false) {
+      enabled(false),
+      lastCommandTime(0) {
     
     // Initialize telemetry
     telemetry.leftSpeed = 0;
@@ -40,6 +41,9 @@ void MotorController::begin() {
     // Initial state: motors stopped
     stop();
     
+    // Initialize safety timeout
+    lastCommandTime = millis();
+    
     logger.info("MotorController", "Motor controller initialized");
 }
 
@@ -48,6 +52,11 @@ void MotorController::processMovementInput(int8_t joystickX, int8_t joystickY) {
         stop();
         return;
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SAFETY: Command empfangen - Timer zurücksetzen
+    // ═══════════════════════════════════════════════════════════════════
+    lastCommandTime = millis();
 
     // Berechne Abstand vom Nullpunkt (Joystick-Auslenkung)
     float distance = sqrt(joystickX * joystickX + joystickY * joystickY);
@@ -63,17 +72,27 @@ void MotorController::processMovementInput(int8_t joystickX, int8_t joystickY) {
     float scaledY = joystickY * scaleFactor;
 
     // Differential steering
-    // leftSpeed: Vorwärts/Rückwärts + Drehung nach rechts erhöht links
-    // rightSpeed: Vorwärts/Rückwärts - Drehung nach rechts verringert rechts
-    float leftSpeed = scaledY - scaledX;   // Range: -200 bis +200
-    float rightSpeed = scaledY + scaledX;  // Range: -200 bis +200
+    float leftSpeed = scaledY - scaledX;   // Range: -100 bis +100
+    float rightSpeed = scaledY + scaledX;  // Range: -100 bis +100
 
-    // Skaliere auf PWM-Bereich (0-255) basierend auf kombinierter Geschwindigkeit
-    // leftSpeed/rightSpeed liegen zwischen -200 und +200
-    int leftPWM = (int)(abs(leftSpeed) * 255.0 / 100.0);
-    int rightPWM = (int)(abs(rightSpeed) * 255.0 / 100.0);
-
-    // Begrenze PWM-Werte
+    // ═══════════════════════════════════════════════════════════════════
+    // PWM-Skalierung: 127-255 (127 = Minimum, 255 = Maximum)
+    // ═══════════════════════════════════════════════════════════════════
+    
+    int leftPWM = 0;
+    int rightPWM = 0;
+    
+    if (abs(leftSpeed) > 0) {
+        // Map von 0-100 auf 127-255
+        leftPWM = map((int)abs(leftSpeed), 0, 100, 127, 255);
+    }
+    
+    if (abs(rightSpeed) > 0) {
+        // Map von 0-100 auf 127-255
+        rightPWM = map((int)abs(rightSpeed), 0, 100, 127, 255);
+    }
+    
+    // Begrenze PWM-Werte zur Sicherheit
     leftPWM = constrain(leftPWM, 0, 255);
     rightPWM = constrain(rightPWM, 0, 255);
 
@@ -116,6 +135,7 @@ void MotorController::stop() {
 void MotorController::enable() {
     enabled = true;
     telemetry.motorsEnabled = true;
+    lastCommandTime = millis();  // Reset timeout bei Enable
     logger.info("MotorController", "Motors enabled");
 }
 
@@ -131,8 +151,46 @@ MotorTelemetry MotorController::getTelemetry() const {
 }
 
 void MotorController::update() {
-    // Placeholder for periodic tasks (e.g., watchdog, safety checks)
-    // Could implement timeout safety stop if no command received
+    // ═══════════════════════════════════════════════════════════════════
+    // SAFETY CHECK: Command Timeout
+    // ═══════════════════════════════════════════════════════════════════
+    checkCommandTimeout();
+}
+
+void MotorController::checkCommandTimeout() {
+    // Nur prüfen wenn Motoren enabled sind
+    if (!enabled) {
+        return;
+    }
+    
+    // Prüfe ob Motoren aktuell laufen (PWM > 0)
+    bool motorsRunning = (telemetry.leftPWM > 0 || telemetry.rightPWM > 0);
+    
+    if (!motorsRunning) {
+        return;  // Motoren sind bereits aus, nichts zu tun
+    }
+    
+    // Prüfe Timeout
+    unsigned long timeSinceLastCommand = millis() - lastCommandTime;
+    
+    if (timeSinceLastCommand > COMMAND_TIMEOUT_MS) {
+        // TIMEOUT! Emergency Stop
+        Serial.println("\n╔════════════════════════════════════════╗");
+        Serial.println("║  ⚠️  SAFETY TIMEOUT - EMERGENCY STOP  ║");
+        Serial.println("╚════════════════════════════════════════╝");
+        Serial.printf("Time since last command: %lu ms (limit: %lu ms)\n", 
+                     timeSinceLastCommand, COMMAND_TIMEOUT_MS);
+        Serial.printf("Motors were running: L=%d, R=%d\n", 
+                     telemetry.leftPWM, telemetry.rightPWM);
+        
+        logger.warning("MotorController", "Command timeout - emergency stop!");
+        
+        // STOP!
+        stop();
+        
+        Serial.println("✅ Motors stopped for safety");
+        Serial.println("════════════════════════════════════════\n");
+    }
 }
 
 void MotorController::setMotor(uint8_t motor, bool forward, uint8_t pwm) {
@@ -145,7 +203,6 @@ void MotorController::setMotor(uint8_t motor, bool forward, uint8_t pwm) {
             digitalWrite(pinIn1, LOW);
             digitalWrite(pinIn2, HIGH);
         }
-        Serial.printf("Motor links: PWM %d direction %d\n", pwm, forward);
         analogWrite(pinEnA, pwm);
     } 
     else if (motor == MOTOR_ID_RIGHT) {
@@ -157,7 +214,6 @@ void MotorController::setMotor(uint8_t motor, bool forward, uint8_t pwm) {
             digitalWrite(pinIn3, LOW);
             digitalWrite(pinIn4, HIGH);
         }
-        Serial.printf("Motor rechts: PWM %d direction %d\n", pwm, forward);
         analogWrite(pinEnB, pwm);
     }
 }
